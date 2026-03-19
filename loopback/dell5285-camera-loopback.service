@@ -1,0 +1,12 @@
+[Unit]
+Description=Dell Latitude 5285 camera loopback (libcamera -> v4l2loopback)
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/dell5285-camera-loopback
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=graphical-session.target

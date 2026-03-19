@@ -1,0 +1,165 @@
+#!/usr/bin/env python3
+r"""
+Dell Latitude 5285 camera loopback.
+
+Streams one IPU3 camera at a time into a v4l2loopback device.
+The IPU3 IMGU can only run one camera pipeline simultaneously.
+
+  /dev/video50  <--  selected camera (front or back)
+
+The active camera is determined by the DELL5285_CAMERA env var:
+  DELL5285_CAMERA=front  (default)  OV5670  \_SB_.PCI0.LNK0
+  DELL5285_CAMERA=back               OV8858  \_SB_.PCI0.LNK1
+
+exclusive_caps=1 is required: it exposes only V4L2_CAP_VIDEO_CAPTURE so that
+Chrome/PipeWire classify the device as a camera (not video output).  With
+exclusive_caps=1 the producer uses write() and consumers use the standard
+V4L2 CAPTURE streaming API.  VIDIOC_STREAMON(CAPTURE) succeeds once at least
+one frame has been written (write_position > 0 in v4l2loopback).
+"""
+
+import os
+import sys
+import signal
+import struct
+import fcntl
+import gi
+gi.require_version('Gst', '1.0')
+gi.require_version('GLib', '2.0')
+from gi.repository import Gst, GLib
+
+CAMERAS = {
+    "front": (r"\_SB_.PCI0.LNK0", "OV5670 front"),
+    "back":  (r"\_SB_.PCI0.LNK1", "OV8858 back"),
+}
+SINK_DEVICE = "/dev/video50"
+WIDTH, HEIGHT = 1280, 720
+
+# VIDIOC_S_FMT = _IOWR('V', 5, struct v4l2_format)
+# sizeof(struct v4l2_format) = 208 on kernel 6.17 (type=4 + union=204)
+_VIDIOC_S_FMT  = (3 << 30) | (208 << 16) | (ord('V') << 8) | 5
+_V4L2_OUTPUT   = 2                               # V4L2_BUF_TYPE_VIDEO_OUTPUT
+_V4L2_PIX_YUYV = struct.unpack('<I', b'YUYV')[0]
+
+# YUYV black frame: Y=0x10, U=0x80 (YUYV pairs = [0x10, 0x80, 0x10, 0x80, ...])
+_BLACK_FRAME = bytes([0x10, 0x80] * (WIDTH * HEIGHT))
+
+
+def open_loopback(device_path):
+    """Open v4l2loopback and configure YUYV 1280x720 format.
+
+    With exclusive_caps=1 the device only advertises V4L2_CAP_VIDEO_CAPTURE.
+    VIDIOC_S_FMT uses V4L2_BUF_TYPE_VIDEO_CAPTURE (type=1).
+
+    Writes one black frame immediately so that write_position > 0, which
+    allows consumers to call VIDIOC_STREAMON(CAPTURE) as soon as they open
+    the device — even before real camera frames arrive.
+    """
+    fd = os.open(device_path, os.O_RDWR | os.O_NONBLOCK)
+
+    bytesperline = WIDTH * 2        # YUYV: 2 bytes/pixel
+    sizeimage    = bytesperline * HEIGHT
+    pix = struct.pack('<IIIIIIII',
+        WIDTH, HEIGHT, _V4L2_PIX_YUYV,
+        0,              # field = V4L2_FIELD_ANY
+        bytesperline, sizeimage,
+        0, 0)           # colorspace=DEFAULT, priv=0
+
+    # struct v4l2_format on kernel 6.17:
+    #   type (4 B) + reserved (4 B) + union (200 B) = 208 B
+    # With exclusive_caps=1, VIDIOC_S_FMT requires V4L2_BUF_TYPE_VIDEO_OUTPUT (2)
+    # to set the producer format; type=1 (CAPTURE) returns EINVAL.
+    fmt = struct.pack('<II', _V4L2_OUTPUT, 0) + pix + bytes(200 - len(pix))
+    try:
+        fcntl.ioctl(fd, _VIDIOC_S_FMT, bytearray(fmt))
+    except OSError as e:
+        print(f"Warning: VIDIOC_S_FMT failed: {e}", file=sys.stderr)
+
+    # Prime write_position so consumers can VIDIOC_STREAMON immediately.
+    try:
+        os.write(fd, _BLACK_FRAME)
+    except OSError:
+        pass  # EAGAIN is fine; v4l2loopback buffers the frame internally
+
+    return fd
+
+
+def make_pipeline(camera_name):
+    # queue breaks the DMA-buf buffer pool negotiation chain between
+    # libcamerasrc and videoconvert, forcing a software copy.
+    # appsink + write() is used because with exclusive_caps=1 the device only
+    # advertises CAPTURE capability, so v4l2sink (which needs OUTPUT cap) would
+    # refuse to initialise.
+    pipeline = Gst.parse_launch(
+        "libcamerasrc name=src"
+        " ! video/x-raw,format=NV12,width=1280,height=720"
+        " ! queue"
+        " ! videoconvert"
+        " ! video/x-raw,format=YUY2,width=1280,height=720"
+        " ! appsink name=sink emit-signals=true max-buffers=1 drop=true"
+    )
+    pipeline.get_by_name("src").set_property("camera-name", camera_name)
+    return pipeline
+
+
+def main():
+    Gst.init(None)
+
+    selection = os.environ.get("DELL5285_CAMERA", "front").lower()
+    if selection not in CAMERAS:
+        print(f"Unknown camera '{selection}', use 'front' or 'back'", file=sys.stderr)
+        sys.exit(1)
+
+    camera_name, label = CAMERAS[selection]
+    print(f"dell5285-camera-loopback: streaming {label} -> {SINK_DEVICE}")
+
+    # Open and configure the loopback device (writes one black frame to prime
+    # write_position before the pipeline produces real frames).
+    out_fd = open_loopback(SINK_DEVICE)
+
+    pipeline = make_pipeline(camera_name)
+    loop     = GLib.MainLoop()
+    appsink  = pipeline.get_by_name("sink")
+
+    def on_new_sample(sink):
+        sample = sink.emit("pull-sample")
+        if sample:
+            buf = sample.get_buffer()
+            ok, mapinfo = buf.map(Gst.MapFlags.READ)
+            if ok:
+                try:
+                    os.write(out_fd, bytes(mapinfo.data))
+                except BlockingIOError:
+                    pass  # no reader yet — drop frame silently
+                buf.unmap(mapinfo)
+        return Gst.FlowReturn.OK
+
+    appsink.connect("new-sample", on_new_sample)
+
+    def on_message(bus, msg):
+        if msg.type == Gst.MessageType.ERROR:
+            err, dbg = msg.parse_error()
+            print(f"ERROR: {err.message}", file=sys.stderr)
+            if dbg:
+                print(f"debug: {dbg}", file=sys.stderr)
+            loop.quit()
+        elif msg.type == Gst.MessageType.EOS:
+            loop.quit()
+
+    pipeline.get_bus().add_signal_watch()
+    pipeline.get_bus().connect("message", on_message)
+
+    signal.signal(signal.SIGTERM, lambda s, f: loop.quit())
+    signal.signal(signal.SIGINT,  lambda s, f: loop.quit())
+
+    pipeline.set_state(Gst.State.PLAYING)
+
+    try:
+        loop.run()
+    finally:
+        pipeline.set_state(Gst.State.NULL)
+        os.close(out_fd)
+
+
+if __name__ == "__main__":
+    main()
