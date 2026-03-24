@@ -172,8 +172,12 @@ skl_int3472_fill_clk_pdata(struct device *dev, struct tps68470_clk_platform_data
 #define AML_QWORD_PREFIX	0x0E
 
 /**
- * aml_parse_int - Parse one AML integer at @p, store value in @val.
- * Returns number of bytes consumed, or 0 on failure.
+ * aml_parse_int - Parse one AML integer opcode at @p.
+ * @p:   Pointer to the current position in the AML byte stream.
+ * @end: One past the last valid byte of the AML buffer.
+ * @val: Output: the parsed integer value.
+ *
+ * Returns the number of bytes consumed, or 0 on failure.
  */
 static int aml_parse_int(const u8 *p, const u8 *end, u64 *val)
 {
@@ -212,6 +216,9 @@ static int aml_parse_int(const u8 *p, const u8 *end, u64 *val)
 
 /**
  * dell5285_gnvs_from_table - Scan one ACPI table for the GNVS OperationRegion.
+ * @tbl:  ACPI table header; the AML body is scanned for the GNVS signature.
+ * @addr: Output: physical base address of the GNVS region.
+ * @size: Output: byte length of the GNVS region.
  *
  * Searches the AML body of @tbl for the byte sequence:
  *   ExtOp(0x5B) OpRegionOp(0x80) NameSeg("GNVS") RegionSpace(SystemMemory=0x00)
@@ -253,8 +260,11 @@ static bool dell5285_gnvs_from_table(const struct acpi_table_header *tbl,
 }
 
 /**
- * dell5285_gnvs_find - Locate the GNVS OperationRegion address by scanning
- *                      DSDT and SSDTs.
+ * dell5285_gnvs_find - Locate the GNVS OperationRegion by scanning DSDT and SSDTs.
+ * @addr: Output: physical base address of the GNVS region.
+ * @size: Output: byte length of the GNVS region.
+ *
+ * Returns true if the GNVS region was found in any ACPI table.
  */
 static bool dell5285_gnvs_find(phys_addr_t *addr, u32 *size)
 {
