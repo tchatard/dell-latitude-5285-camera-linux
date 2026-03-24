@@ -1849,7 +1849,7 @@ static int ov8858_parse_of(struct ov8858 *ov8858)
 	endpoint = fwnode_graph_get_next_endpoint(dev_fwnode(dev), NULL);
 	if (!endpoint) {
 		dev_err(dev, "Failed to get endpoint\n");
-		return -EINVAL;
+		return -EPROBE_DEFER;
 	}
 
 	ret = v4l2_fwnode_endpoint_parse(endpoint, &vep);
@@ -1867,7 +1867,7 @@ static int ov8858_parse_of(struct ov8858 *ov8858)
 	default:
 		dev_err(dev, "Unsupported number of data lanes %u\n",
 			ov8858->num_lanes);
-		return -EINVAL;
+		return -EPROBE_DEFER;
 	}
 
 	return 0;
