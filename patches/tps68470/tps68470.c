@@ -163,7 +163,7 @@ skl_int3472_fill_clk_pdata(struct device *dev, struct tps68470_clk_platform_data
 /* Minimum GNVS region size: last field (L1CL) is 1 byte at 0x549 */
 #define DELL5285_GNVS_MIN_SIZE	(DELL5285_L1CL_OFF + 1)
 
-/* AML integer opcodes (ACPI 6.4, §20.2.3) */
+/* AML integer opcodes (ACPI 6.4, section 20.2.3) */
 #define AML_ZERO_OP		0x00
 #define AML_ONE_OP		0x01
 #define AML_BYTE_PREFIX		0x0A
