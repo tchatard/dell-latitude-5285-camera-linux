@@ -51,7 +51,7 @@ info() { echo "==> $*"; }
 # ── locate sign-file ─────────────────────────────────────────────────────────
 find_sign_file() {
     local ksrc
-    ksrc=$(find "$REPO_ROOT/build" -maxdepth 1 -name 'linux-source-*' -type d 2>/dev/null | head -1)
+    ksrc=$(find "$REPO_ROOT/build/kernel" -maxdepth 1 -name 'linux-source-*' -type d 2>/dev/null | head -1)
     local candidates=(
         "${ksrc:+$ksrc/scripts/sign-file}"
         "/usr/src/linux-headers-$KVER/scripts/sign-file"
