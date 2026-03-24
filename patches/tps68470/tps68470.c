@@ -180,20 +180,32 @@ static int aml_parse_int(const u8 *p, const u8 *end, u64 *val)
 	if (p >= end)
 		return 0;
 	switch (*p) {
-	case AML_ZERO_OP:  *val = 0; return 1;
-	case AML_ONE_OP:   *val = 1; return 1;
+	case AML_ZERO_OP:
+		*val = 0;
+		return 1;
+	case AML_ONE_OP:
+		*val = 1;
+		return 1;
 	case AML_BYTE_PREFIX:
-		if (p + 2 > end) return 0;
-		*val = p[1]; return 2;
+		if (p + 2 > end)
+			return 0;
+		*val = p[1];
+		return 2;
 	case AML_WORD_PREFIX:
-		if (p + 3 > end) return 0;
-		*val = get_unaligned_le16(p + 1); return 3;
+		if (p + 3 > end)
+			return 0;
+		*val = get_unaligned_le16(p + 1);
+		return 3;
 	case AML_DWORD_PREFIX:
-		if (p + 5 > end) return 0;
-		*val = get_unaligned_le32(p + 1); return 5;
+		if (p + 5 > end)
+			return 0;
+		*val = get_unaligned_le32(p + 1);
+		return 5;
 	case AML_QWORD_PREFIX:
-		if (p + 9 > end) return 0;
-		*val = get_unaligned_le64(p + 1); return 9;
+		if (p + 9 > end)
+			return 0;
+		*val = get_unaligned_le64(p + 1);
+		return 9;
 	}
 	return 0;
 }
