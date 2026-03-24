@@ -1,2 +1,7 @@
 /patches-for-submission/
 /upstream/
+# Build environment and artefacts
+/build/
+# Secure Boot MOK — private key must never be committed
+/mok/mok.key
+/mok/mok.der

@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # Dell Latitude 5285 camera fix — install helper
 # Run from the repository root.
-# Kernel module *building* is not automated here; see README.md for build steps.
 set -euo pipefail
 
+REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
 KVER=$(uname -r)
 INST=/lib/modules/${KVER}/updates/dkms
+ARTEFACTS="$REPO_ROOT/build/artefacts"
 
 ###############################################################################
 # 1. Config files
@@ -30,18 +31,24 @@ sudo apt-get install -y \
     gstreamer1.0-plugins-base gstreamer1.0-libcamera
 
 ###############################################################################
-# 4. Patched kernel modules (must already be built — see README)
+# 4. Patched kernel modules
 ###############################################################################
-echo "==> Checking for built .ko files..."
+# Build if artefacts are missing
+if [[ ! -f "$ARTEFACTS/intel-lpss-acpi.ko" ]]; then
+    echo "==> Artefacts not found — running build.sh first..."
+    "$REPO_ROOT/build.sh"
+fi
+
+echo "==> Checking for built .ko files in $ARTEFACTS/ ..."
 MISSING=0
 for f in \
-    patches/lpss/intel-lpss-acpi.ko \
-    patches/tps68470/intel_skl_int3472_tps68470.ko \
-    patches/ipu_bridge/ipu_bridge.ko \
-    patches/ov8858/ov8858.ko
+    "$ARTEFACTS/intel-lpss-acpi.ko" \
+    "$ARTEFACTS/intel_skl_int3472_tps68470.ko" \
+    "$ARTEFACTS/ipu_bridge.ko" \
+    "$ARTEFACTS/ov8858.ko"
 do
     if [[ ! -f "$f" ]]; then
-        echo "    MISSING: $f  (build it first — see README)"
+        echo "    MISSING: $f"
         MISSING=1
     fi
 done
@@ -50,12 +57,12 @@ if [[ $MISSING -eq 0 ]]; then
     echo "==> Installing patched kernel modules to ${INST}..."
     sudo mkdir -p "${INST}"
     for ko in \
-        patches/lpss/intel-lpss-acpi.ko \
-        patches/lpss/intel-lpss.ko \
-        patches/lpss/intel-lpss-pci.ko \
-        patches/tps68470/intel_skl_int3472_tps68470.ko \
-        patches/ipu_bridge/ipu_bridge.ko \
-        patches/ov8858/ov8858.ko
+        "$ARTEFACTS/intel-lpss-acpi.ko" \
+        "$ARTEFACTS/intel-lpss.ko" \
+        "$ARTEFACTS/intel-lpss-pci.ko" \
+        "$ARTEFACTS/intel_skl_int3472_tps68470.ko" \
+        "$ARTEFACTS/ipu_bridge.ko" \
+        "$ARTEFACTS/ov8858.ko"
     do
         [[ -f "$ko" ]] || continue
         base=$(basename "$ko")
@@ -72,7 +79,8 @@ if [[ $MISSING -eq 0 ]]; then
     sudo update-initramfs -u -k "${KVER}"
 else
     echo ""
-    echo "Build the missing modules first (see README), then re-run this script."
+    echo "Some modules could not be built. Check build output above."
+    exit 1
 fi
 
 ###############################################################################
