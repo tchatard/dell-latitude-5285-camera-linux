@@ -182,7 +182,7 @@ softdep ov8858   pre: intel_skl_int3472_tps68470
 
 **`config/modprobe.d/v4l2loopback.conf`** — loopback devices:
 ```
-options v4l2loopback devices=2 video_nr=50,51 exclusive_caps=1 card_label="Front Camera,Back Camera"
+options v4l2loopback devices=2 video_nr=50,51 exclusive_caps=1,1 card_label="Front Camera,Back Camera"
 ```
 
 ---
@@ -197,11 +197,12 @@ sudo apt install v4l2loopback-dkms python3-gi python3-gi-cairo gir1.2-gstreamer-
                  gstreamer1.0-plugins-base gstreamer1.0-libcamera
 ```
 
-### Why `exclusive_caps=1` is required
+### Why `exclusive_caps=1,1` is required
 
-With `exclusive_caps=1`, the device advertises only `V4L2_CAP_VIDEO_CAPTURE`.
+With `exclusive_caps=1` per device, each advertises only `V4L2_CAP_VIDEO_CAPTURE`.
 Chrome/PipeWire use this flag to distinguish cameras from video output devices.
-Without it, Chrome will not list the device at all.
+Without it (or if only the first device gets `exclusive_caps=1`), Chrome will not
+list the device at all.
 
 ### Why `v4l2sink` does not work here
 
@@ -246,26 +247,31 @@ systemctl --user daemon-reload
 systemctl --user enable --now dell5285-camera-loopback.service
 ```
 
-To switch to the back camera (front and back are mutually exclusive):
-
-```bash
-systemctl --user stop dell5285-camera-loopback.service
-DELL5285_CAMERA=back ~/.local/bin/dell5285-camera-loopback
-```
+The daemon is fully automatic: it starts a libcamera pipeline when an app opens
+a loopback device and tears it down when the app closes it. Camera switching
+(front ↔ back) is handled transparently — the IPU3 IMGU constraint (one pipeline
+at a time) is enforced internally.
 
 ---
 
-## Why Zoom sees both cameras but Chrome only sees the front
+## Camera visibility in Chrome and Zoom
 
-**Zoom** enumerates V4L2 devices directly (`/dev/video*`) and lists all of
-them — including `/dev/video51` (back camera loopback), even though nothing
-is streaming to it. Selecting it in Zoom shows a blank image.
+Both `/dev/video50` (front) and `/dev/video51` (back) are visible and functional
+in Zoom, Chrome, and GNOME Camera.
 
-**Chrome** uses the XDG Camera Portal, which goes through PipeWire /
-WirePlumber. PipeWire only exposes loopback devices that currently have an
-active stream *and* advertise `V4L2_CAP_VIDEO_CAPTURE` without
-`V4L2_CAP_VIDEO_OUTPUT`. Because only video50 has an active stream (the
-service writes to it), PipeWire shows exactly one camera.
+**Zoom** enumerates V4L2 devices directly (`/dev/video*`). Both loopback devices
+appear in the camera list. Selecting either one starts the corresponding libcamera
+pipeline via the daemon.
+
+**Chrome** uses the XDG Camera Portal (PipeWire / WirePlumber). Both devices
+appear because `exclusive_caps=1,1` ensures each reports only
+`V4L2_CAP_VIDEO_CAPTURE` — Chrome rejects any device with the `V4L2_CAP_VIDEO_OUTPUT`
+flag. WirePlumber creates Video/Source nodes for both and they are available
+through the portal.
+
+**Switching cameras:** apps typically close the current camera and reopen the
+selected one. The daemon detects this via inotify and switches the active
+libcamera pipeline automatically (with a ~2 s startup delay for the new pipeline).
 
 ---
 
@@ -286,15 +292,11 @@ No calibration tuning file exists for OV8858 in libcamera. Falls back to
 
 ## Ubuntu GNOME Camera app
 
-The GNOME camera app requires exclusive libcamera access. The loopback service
-holds the front camera via `libcamerasrc`, so the GNOME app will fail while the
-service is running. Stop the service first:
-
-```bash
-systemctl --user stop dell5285-camera-loopback.service
-# use GNOME camera app
-systemctl --user start dell5285-camera-loopback.service
-```
+GNOME Camera works while the loopback service is running. The daemon only holds
+a libcamera pipeline when an app is actively consuming a loopback device; when
+idle the pipeline is in NULL state and libcamera is fully released. GNOME Camera
+therefore gets exclusive access as long as no loopback consumer (Zoom, Chrome)
+is open at the same time.
 
 ---
 
@@ -305,4 +307,5 @@ systemctl --user start dell5285-camera-loopback.service
 - Kernel: 6.17.0-19-generic
 - libcamera: system package (Ubuntu 25.10)
 - v4l2loopback-dkms: system package
-- Working in: Chrome (Google Meet), Zoom, ffmpeg, GStreamer
+- Working in: Chrome (Google Meet), Zoom, GNOME Camera, ffmpeg, GStreamer
+- Both front (OV5670) and back (OV8858) cameras work and are switchable

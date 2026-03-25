@@ -18,16 +18,16 @@ GNVS base: 0xAAE22000 (stable across reboots — but now discovered dynamically 
 
 ---
 
-## Current status (2026-03-19)
+## Current status (2026-03-25)
 
-All cameras working ✅. Patches submitted upstream.
+All cameras working ✅. Patches submitted upstream (v2, 2026-03-24).
 
 - intel-lpss IGNORE_RESOURCE_CONFLICTS for I2C4: ✅
 - GNVS fix (C0TP/L0CL/L1CL → 0x02) via DSDT AML scanner: ✅
   - `dmesg: "Dell 5285 GNVS fix at 0x00000000aae22000: C0TP=0x02 L0CL=0x00 L1CL=0x00 -> 0x02"`
 - ipu_bridge finds both INT3477 and INT3479: ✅
-- Front camera (OV5670): ✅ working in Zoom and Chrome via PipeWire
-- Back camera (OV8858): ✅ registered (mutually exclusive with front — IPU3 HW limit)
+- Front camera (OV5670): ✅ working in Zoom, Chrome, and GNOME Camera via PipeWire
+- Back camera (OV8858): ✅ working in Zoom and Chrome via PipeWire (on-demand loopback daemon)
 - VSIO regulator (S_I2C_CTL passthrough): ✅ vsio=1
 
 **Note:** `cam -l` fails with EBUSY when PipeWire is running — PipeWire holds /dev/media0
@@ -42,7 +42,8 @@ expected and does not indicate a problem.
 
 ## Upstream submission
 
-**Status: SUBMITTED 2026-03-19. Awaiting maintainer feedback.**
+**Status: v2 SUBMITTED 2026-03-24. Awaiting maintainer feedback.**
+v1 (2026-03-19) marked Superseded on patchwork. v2 fixed checkpatch errors, kernel-doc @param warnings, non-ASCII § in comment, wrong git identity on patch3.
 
 Single 5-patch series in `patches-for-submission/combined/`:
 
@@ -134,30 +135,18 @@ Fix: full supply map and GPIO lookup tables for both sensors.
 
 ## Build system
 
-**Kernel source:** `~/kernel-build/linux-source-6.17.0/`
+**Kernel source:** `./build/kernel/kernel/` (inside repo, gitignored)
+**Build artefacts:** `./build/artefacts/` (output of `build.sh`, gitignored)
 
-**Build directories** (outside this repo):
-- `~/tps68470_build/` → intel_skl_int3472_tps68470.ko
-- `~/lpss_build/` → intel-lpss-acpi.ko, intel-lpss.ko, intel-lpss-pci.ko
-- `~/ipu_bridge_build/` → ipu_bridge.ko
-- `~/ov8858_build/` → ov8858.ko
-
-**Build command:**
-```bash
-sudo make -C ~/kernel-build/linux-source-6.17.0 CC=x86_64-linux-gnu-gcc M=~/[build-dir] modules
-```
-
-**Install command:**
-```bash
-sudo zstd -f ~/[build-dir]/module.ko -o /lib/modules/6.17.0-19-generic/updates/dkms/module.ko.zst
-```
-
-Note: build artifacts are owned by root — use `sudo` for make.
+**Scripts:**
+- `build.sh` — discovers kernel source under `./build/kernel/`, builds all modules into `./build/artefacts/`
+- `sign-modules.sh` — two-phase MOK sign + depmod + update-initramfs (use `sudo -E`, not plain `sudo`)
+- `install.sh` — auto-invokes `build.sh` if artefacts missing, then installs
 
 **After any module install:**
 ```bash
-sudo depmod -a
-sudo update-initramfs -u -k $(uname -r)
+./install.sh
+sudo -E ./sign-modules.sh
 # then reboot
 ```
 
@@ -170,6 +159,7 @@ sudo update-initramfs -u -k $(uname -r)
 
 **Config files:**
 - `/etc/modprobe.d/dell-5285-camera.conf`
+- `/etc/modprobe.d/v4l2loopback.conf`
 - `/etc/modules-load.d/dell-5285-lpss.conf`
 
 ---
@@ -196,11 +186,19 @@ find /lib/modules/$(uname -r)/updates/dkms -name "*.ko" -not -name "*.zst"
 
 ## Loopback streaming (Chrome/Zoom)
 
-Front camera works in Chrome, Zoom, and ffmpeg via v4l2loopback ✅
+Both cameras work in Chrome, Zoom, and GNOME Camera via v4l2loopback ✅
 
-**Config:** `/etc/modprobe.d/v4l2loopback.conf` — `exclusive_caps=1`
+**Config:** `/etc/modprobe.d/v4l2loopback.conf` — `exclusive_caps=1,1`
+- `exclusive_caps=1,1` required: each device must report VIDEO_CAPTURE only (no VIDEO_OUTPUT flag) or Chrome rejects it
 
-**GStreamer pipeline:**
+**Daemon:** `loopback/dell5285-camera-loopback` (systemd user service)
+- On-demand: pipeline created when a consumer opens the device, torn down when it closes
+- IPU3 IMGU mutual exclusion: whichever camera the user selects wins; the other waits
+- Consumer detection: inotify (IN_OPEN/IN_CLOSE) + 2s delay (filters out enumeration opens) + /proc/fd scan
+- Camera switching: active camera's watchdog detects when readers leave; immediately starts the other if it has waiting readers
+- GNOME Camera: works while service is running (pipeline is idle/NULL when no loopback consumer)
+
+**GStreamer pipeline (per channel):**
 ```
 libcamerasrc ! video/x-raw,format=NV12,width=1280,height=720 ! queue ! videoconvert ! video/x-raw,format=YUY2,width=1280,height=720 ! appsink
 ```
@@ -210,6 +208,3 @@ libcamerasrc ! video/x-raw,format=NV12,width=1280,height=720 ! queue ! videoconv
 - 4-byte reserved field between `type` and `union fmt`: pack as `struct.pack('<II', type, 0) + pix + bytes(200 - len(pix))`
 - With `exclusive_caps=1`: VIDIOC_S_FMT requires OUTPUT type (type=2)
 - Must write one black frame immediately after S_FMT before consumers can STREAMON
-
-Back camera: not streamed — IPU3 IMGU allows only one pipeline at a time.
-GNOME Camera app: works when loopback service is stopped (expected — libcamerasrc holds exclusive access).
