@@ -1,6 +1,6 @@
 [Unit]
 Description=Dell Latitude 5285 camera loopback (libcamera -> v4l2loopback)
-After=graphical-session.target
+After=graphical-session.target wireplumber.service
 
 [Service]
 Type=simple
