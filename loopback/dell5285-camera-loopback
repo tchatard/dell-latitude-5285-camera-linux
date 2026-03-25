@@ -20,6 +20,9 @@ one frame has been written (write_position > 0 in v4l2loopback).
 
 import os
 import sys
+import glob
+import ctypes
+import ctypes.util
 import signal
 import struct
 import fcntl
@@ -84,6 +87,51 @@ def open_loopback(device_path):
     return fd
 
 
+_libc = ctypes.CDLL(ctypes.util.find_library('c'), use_errno=True)
+
+# inotify event: wd(i32) + mask(u32) + cookie(u32) + len(u32) + name(len bytes)
+_INOTIFY_EVENT  = struct.Struct('iIII')
+_IN_OPEN        = 0x00000020
+_IN_CLOSE       = 0x00000018   # IN_CLOSE_WRITE | IN_CLOSE_NOWRITE
+
+
+def setup_inotify(device_path: str) -> int:
+    """Create an inotify fd watching device_path for open/close events."""
+    fd = _libc.inotify_init1(os.O_NONBLOCK | os.O_CLOEXEC)
+    if fd < 0:
+        raise OSError(ctypes.get_errno(), "inotify_init1 failed")
+    wd = _libc.inotify_add_watch(fd, device_path.encode(), _IN_OPEN | _IN_CLOSE)
+    if wd < 0:
+        os.close(fd)
+        raise OSError(ctypes.get_errno(), f"inotify_add_watch failed for {device_path}")
+    return fd
+
+
+def drain_inotify(inotify_fd: int) -> None:
+    """Read and discard all pending inotify events."""
+    try:
+        while True:
+            data = os.read(inotify_fd, 4096)
+            if not data:
+                break
+    except BlockingIOError:
+        pass
+
+
+def has_readers(device_path: str, my_pid: int) -> bool:
+    """Return True if any process other than my_pid has device_path open."""
+    real_device = os.path.realpath(device_path)
+    for fd_link in glob.glob('/proc/[0-9]*/fd/*'):
+        if int(fd_link.split('/')[2]) == my_pid:
+            continue
+        try:
+            if os.readlink(fd_link) == real_device:
+                return True
+        except OSError:
+            pass
+    return False
+
+
 def make_pipeline(camera_name):
     # queue breaks the DMA-buf buffer pool negotiation chain between
     # libcamerasrc and videoconvert, forcing a software copy.
@@ -111,11 +159,14 @@ def main():
         sys.exit(1)
 
     camera_name, label = CAMERAS[selection]
-    print(f"dell5285-camera-loopback: streaming {label} -> {SINK_DEVICE}")
+    print(f"dell5285-camera-loopback: ready ({label} -> {SINK_DEVICE}), waiting for consumers")
 
     # Open and configure the loopback device (writes one black frame to prime
     # write_position before the pipeline produces real frames).
     out_fd = open_loopback(SINK_DEVICE)
+
+    # Set up inotify AFTER our own open so our open does not trigger the watch.
+    inotify_fd = setup_inotify(SINK_DEVICE)
 
     pipeline = make_pipeline(camera_name)
     loop     = GLib.MainLoop()
@@ -152,13 +203,33 @@ def main():
     signal.signal(signal.SIGTERM, lambda s, f: loop.quit())
     signal.signal(signal.SIGINT,  lambda s, f: loop.quit())
 
-    pipeline.set_state(Gst.State.PLAYING)
+    # Start paused; the inotify watch will transition to PLAYING when a consumer
+    # opens /dev/video50, and back to PAUSED when the last one closes it.
+    pipeline.set_state(Gst.State.PAUSED)
+    is_playing = False
+
+    def on_inotify_event(source, condition):
+        nonlocal is_playing
+        drain_inotify(inotify_fd)
+        readers = has_readers(SINK_DEVICE, os.getpid())
+        if readers and not is_playing:
+            pipeline.set_state(Gst.State.PLAYING)
+            is_playing = True
+            print(f"dell5285-camera-loopback: consumer detected, streaming {label}")
+        elif not readers and is_playing:
+            pipeline.set_state(Gst.State.PAUSED)
+            is_playing = False
+            print("dell5285-camera-loopback: no consumers, streaming paused")
+        return GLib.SOURCE_CONTINUE
+
+    GLib.io_add_watch(inotify_fd, GLib.IOCondition.IN, on_inotify_event)
 
     try:
         loop.run()
     finally:
         pipeline.set_state(Gst.State.NULL)
         os.close(out_fd)
+        os.close(inotify_fd)
 
 
 if __name__ == "__main__":
