@@ -4,6 +4,7 @@ After=graphical-session.target
 
 [Service]
 Type=simple
+Environment=PYTHONUNBUFFERED=1
 ExecStart=%h/.local/bin/dell5285-camera-loopback
 Restart=on-failure
 RestartSec=5
