@@ -74,9 +74,6 @@ if [[ $MISSING -eq 0 ]]; then
             echo "    removed stale uncompressed ${INST}/${base}"
         fi
     done
-    echo "==> Running depmod and update-initramfs..."
-    sudo depmod -a
-    sudo update-initramfs -u -k "${KVER}"
 else
     echo ""
     echo "Some modules could not be built. Check build output above."
@@ -95,6 +92,13 @@ systemctl --user daemon-reload
 systemctl --user enable dell5285-camera-loopback.service
 echo "    Service enabled (will start on next graphical login, or run:"
 echo "    systemctl --user start dell5285-camera-loopback.service)"
+
+###############################################################################
+# 6. Sign modules (Secure Boot) + depmod + update-initramfs
+###############################################################################
+echo ""
+echo "==> Signing kernel modules for Secure Boot..."
+sudo -E "$REPO_ROOT/sign-modules.sh"
 
 ###############################################################################
 echo ""

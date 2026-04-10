@@ -12,16 +12,25 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
 KVER=$(uname -r)
-KVER_BASE="${KVER%%-*}"   # e.g. 6.17.0-19-generic → 6.17.0
+KVER_BASE="${KVER%%-*}"   # e.g. 6.17.0-20-generic → 6.17.0
 
-# ── locate kernel source ──────────────────────────────────────────────────────
-KSRC=$(find "$REPO_ROOT/build/kernel" -maxdepth 1 -mindepth 1 -type d 2>/dev/null \
-      | while read -r d; do [[ -f "$d/Makefile" ]] && echo "$d" && break; done)
-if [[ -z "$KSRC" ]]; then
-    echo "ERROR: kernel source not found under $REPO_ROOT/build/kernel/" >&2
-    echo "       Move it there first, e.g.:" >&2
-    echo "         mv ~/kernel-build/linux-$KVER_BASE $REPO_ROOT/build/kernel/" >&2
-    exit 1
+# ── locate kernel headers ─────────────────────────────────────────────────────
+# Prefer the installed Ubuntu kernel headers for the running kernel (updated
+# automatically by apt), fall back to a local source tree in ./build/kernel/.
+SYSTEM_HEADERS="/lib/modules/${KVER}/build"
+if [[ -f "${SYSTEM_HEADERS}/Makefile" ]]; then
+    KSRC="$SYSTEM_HEADERS"
+    echo "==> Using system kernel headers: $KSRC"
+else
+    KSRC=$(find "$REPO_ROOT/build/kernel" -maxdepth 1 -mindepth 1 -type d 2>/dev/null \
+          | while read -r d; do [[ -f "$d/Makefile" ]] && echo "$d" && break; done)
+    if [[ -z "$KSRC" ]]; then
+        echo "ERROR: kernel headers not found." >&2
+        echo "       Install them with: sudo apt-get install linux-headers-${KVER}" >&2
+        echo "       Or place a matching source tree under $REPO_ROOT/build/kernel/" >&2
+        exit 1
+    fi
+    echo "==> Using local kernel source: $KSRC"
 fi
 
 OUT="$REPO_ROOT/build/artefacts"
@@ -39,7 +48,7 @@ MODULES=(
 for mod_dir in "${MODULES[@]}"; do
     abs_dir="$REPO_ROOT/$mod_dir"
     echo "==> Building $mod_dir ..."
-    sudo make -C "$KSRC" CC=x86_64-linux-gnu-gcc M="$abs_dir" modules
+    make -C "$KSRC" CC=x86_64-linux-gnu-gcc M="$abs_dir" modules
 done
 
 # ── collect artefacts ─────────────────────────────────────────────────────────
