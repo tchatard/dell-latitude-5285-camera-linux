@@ -289,6 +289,11 @@ static const struct int3472_tps68470_board_data dell_7212_tps68470_board_data = 
 
 /* Settings for Dell Latitude 5285 2-in-1 */
 
+static const struct tps68470_clk_consumer dell_5285_clk_consumers[] = {
+	{ .consumer_dev_name = "i2c-INT3477:00" },	/* OV8858 rear camera  */
+	{ .consumer_dev_name = "i2c-INT3479:00" },	/* OV5670 front camera */
+};
+
 static struct regulator_consumer_supply dell_5285_int3477_ana_consumer_supplies[] = {
 	REGULATOR_SUPPLY("avdd", "i2c-INT3477:00"),
 };
@@ -436,6 +441,8 @@ static struct gpiod_lookup_table dell_5285_int3479_gpios = {
 static const struct int3472_tps68470_board_data dell_5285_tps68470_board_data = {
 	.dev_name = "i2c-INT3472:05",
 	.tps68470_regulator_pdata = &dell_5285_tps68470_pdata,
+	.n_clk_consumers = ARRAY_SIZE(dell_5285_clk_consumers),
+	.clk_consumers = dell_5285_clk_consumers,
 	.n_gpiod_lookups = 2,
 	.tps68470_gpio_lookup_tables = {
 		&dell_5285_int3477_gpios,

@@ -2,6 +2,16 @@
 /upstream/
 # Build environment and artefacts
 /build/
+# Compiled module build artefacts in patches/ subdirectories
+patches/**/*.ko
+patches/**/*.o
+patches/**/*.mod
+patches/**/*.mod.c
+patches/**/*.mod.o
+patches/**/Module.symvers
+patches/**/modules.order
+patches/**/.*.cmd
+patches/**/.module-common.o
 # Secure Boot MOK — private key must never be committed
 /mok/mok.key
 /mok/mok.der
