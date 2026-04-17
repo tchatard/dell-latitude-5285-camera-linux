@@ -54,19 +54,21 @@ without `IGNORE_RESOURCE_CONFLICTS`.
 **Fix:** DMI quirk matching Dell Latitude 5285 + INT3446 → set
 `LPSS_SHARED_CLK | IGNORE_RESOURCE_CONFLICTS`.
 
-### 2. `intel_skl_int3472_tps68470` — GNVS fix
+### 2. `intel_skl_int3472_tps68470` — clock consumer registration
 
-The TPS68470 uses ACPI GNVS fields `L0CL` / `L1CL` to choose a clock
-frequency. On this machine GNVS is not initialised by the BIOS before the
-driver probes, leaving the fields at 0x00. This disables the clock outputs,
-so neither sensor can be reached over I2C.
+`for_each_acpi_consumer_dev()` walks the INT3472 ACPI `_DEP` list to find
+which sensors need a clock. On this machine the OV5670 (INT3479) is absent
+from the `_DEP` list, so the driver never registers a clock consumer for it
+and the front camera is unavailable.
 
-**Fix:** At probe time, read the GNVS base from the `_DSM` method output,
-then write `L0CL = L1CL = 0x02` (19.2 MHz) before enabling any consumer.
+**Fix:** A static `clk_consumers[]` list in the board data bypasses the
+broken `_DEP` traversal entirely. When `n_clk_consumers > 0`, the driver
+uses the board-supplied list instead of calling
+`for_each_acpi_consumer_dev()`.
 
 > **Critical — module cannot be reloaded after boot.**
-> The probe uses `for_each_acpi_consumer_dev()` to build the clock consumer
-> list. This works only at boot when ACPI `_DEP` state is intact.
+> On the ACPI path (no board data), `for_each_acpi_consumer_dev()` works
+> only at boot when ACPI `_DEP` state is intact.
 > After the initial load, `acpi_gpiochip_add()` clears the dependencies, so a
 > `modprobe -r / modprobe` cycle gives 0 consumers → probe fails → no
 > clocks/regulators. **Always test by rebooting, not reloading.**
@@ -113,53 +115,40 @@ the board data above). The original array also had a duplicate `"dvdd"`.
 Prerequisites:
 
 ```bash
-sudo apt install linux-source-$(uname -r) build-essential zstd \
-                 gcc-x86-64-linux-gnu
+sudo apt install linux-headers-$(uname -r) build-essential zstd \
+                 gcc-x86-64-linux-gnu openssl mokutil
 ```
 
-Unpack the kernel source (adjust path as needed):
+The repo includes `install.sh` which handles building, installing, signing
+(Secure Boot / MOK), and updating initramfs in one shot:
 
 ```bash
-KVER=$(uname -r)
-mkdir -p ~/kernel-build
-cd ~/kernel-build
-tar xf /usr/src/linux-source-${KVER}.tar.bz2
+./install.sh
 ```
 
-Build and install each module — repeat for `patches/lpss`, `patches/tps68470`,
-`patches/ipu_bridge`, `patches/ov8858`:
+`install.sh` auto-invokes `build.sh` if compiled artefacts are missing, then
+installs them and calls `sign-modules.sh` (via `sudo -E`) which runs
+`depmod -a` and `update-initramfs -u` automatically. After it completes,
+**reboot**.
 
-```bash
-KVER=$(uname -r)
-KSRC=~/kernel-build/linux-source-${KVER}
-INST=/lib/modules/${KVER}/updates/dkms
-BUILD_DIR=patches/lpss          # change for each module
-
-sudo make -C "$KSRC" CC=x86_64-linux-gnu-gcc M=$(pwd)/${BUILD_DIR} modules
-
-# Install all .ko files produced (example: intel-lpss-acpi.ko)
-for ko in ${BUILD_DIR}/*.ko; do
-    sudo zstd -f "$ko" -o ${INST}/$(basename ${ko}).zst
-done
-```
-
-After installing all modules:
-
-```bash
-sudo depmod -a
-sudo update-initramfs -u -k $(uname -r)
-# Reboot — do not attempt modprobe -r/modprobe without rebooting.
-```
+> **Secure Boot note:** On first run, `sign-modules.sh` generates a MOK
+> keypair under `mok/` and calls `mokutil --import`. You will be prompted
+> to set a one-time password; enter it in the UEFI MOK manager on the next
+> boot to enrol the key. Subsequent runs skip key generation and just sign.
 
 > **Stale module pitfall:** The kernel loads modules from the initramfs at boot,
-> not directly from `/lib/modules`. Forgetting `update-initramfs` means the old
-> module is used. Also watch for uncompressed `.ko` files in `updates/dkms/` —
-> they take precedence over `.ko.zst`:
+> not directly from `/lib/modules`. Always let `install.sh` complete fully
+> (it runs `update-initramfs` for you). Also watch for uncompressed `.ko`
+> files in `updates/dkms/` — they take precedence over `.ko.zst`:
 >
 > ```bash
 > find /lib/modules/$(uname -r)/updates/dkms -name "*.ko" ! -name "*.zst"
 > # Delete any hits after verifying the corresponding .ko.zst is correct.
 > ```
+
+> **Kernel update pitfall:** After a kernel update, run `./install.sh` again
+> and reboot. `build.sh` uses `/lib/modules/$(uname -r)/build` (the running
+> kernel's headers) so it automatically targets the new kernel.
 
 ---
 
@@ -304,7 +293,7 @@ is open at the same time.
 
 - Machine: Dell Latitude 5285 2-in-1
 - OS: Ubuntu 25.10
-- Kernel: 6.17.0-19-generic
+- Kernel: 6.17.0-22-generic (also tested on 6.17.0-19 and 6.17.0-20)
 - libcamera: system package (Ubuntu 25.10)
 - v4l2loopback-dkms: system package
 - Working in: Chrome (Google Meet), Zoom, GNOME Camera, ffmpeg, GStreamer
