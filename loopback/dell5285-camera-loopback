@@ -1,25 +1,45 @@
 #!/usr/bin/env python3
 r"""
-Dell Latitude 5285 camera loopback.
+Dell Latitude 5285 camera loopback — dual-camera daemon.
 
-Streams one IPU3 camera at a time into a v4l2loopback device.
-The IPU3 IMGU can only run one camera pipeline simultaneously.
+Exposes both IPU3 cameras simultaneously as v4l2loopback devices.
+The IPU3 IMGU can run only one camera pipeline at a time; whichever
+device gets a consumer first wins.  The other starts as soon as the
+first is released (e.g. in-app camera switch in Zoom/Chrome).
 
-  /dev/video50  <--  selected camera (front or back)
+  /dev/video50  <--  front camera  (OV5670,  \_SB_.PCI0.LNK0)
+  /dev/video51  <--  back camera   (OV8858,  \_SB_.PCI0.LNK1)
 
-The active camera is determined by the DELL5285_CAMERA env var:
-  DELL5285_CAMERA=front  (default)  OV5670  \_SB_.PCI0.LNK0
-  DELL5285_CAMERA=back               OV8858  \_SB_.PCI0.LNK1
+The pipeline is created fresh on each consumer connection and torn
+down (NULL state) when the last consumer closes, so the cameras are
+fully released when idle and cam -l / libcamera tools work freely.
 
-exclusive_caps=1 is required: it exposes only V4L2_CAP_VIDEO_CAPTURE so that
-Chrome/PipeWire classify the device as a camera (not video output).  With
-exclusive_caps=1 the producer uses write() and consumers use the standard
-V4L2 CAPTURE streaming API.  VIDIOC_STREAMON(CAPTURE) succeeds once at least
-one frame has been written (write_position > 0 in v4l2loopback).
+exclusive_caps=1 is used so that v4l2loopback reports VIDEO_CAPTURE only
+(not VIDEO_OUTPUT), which is required for Chrome to accept the device.
+WirePlumber creates Video/Source nodes for both devices, making both
+cameras visible to Chrome via the PipeWire camera portal.
+
+Consumer detection uses inotify (IN_OPEN / IN_CLOSE) on the loopback
+device file, combined with /proc/*/fd scanning to verify that a process
+other than this daemon has the device open.  With exclusive_caps=1,
+WirePlumber does not keep the loopback devices open between sessions;
+it only opens them when a PipeWire client (e.g. Chrome) requests the
+camera.  POLLOUT on an OUTPUT-mode fd is unsuitable here because
+v4l2loopback sets it based on write-buffer availability, not on
+consumer STREAMON state.
+
+Apps such as Zoom and Chrome briefly open ALL /dev/videoN devices on
+startup (capability enumeration / thumbnail scan).  To avoid starting
+the wrong pipeline on a transient open, the inotify callback schedules
+a 2-second delayed check before calling has_readers().  Brief opens will
+have closed by then; a real streaming consumer will still be present.
 """
 
 import os
 import sys
+import glob
+import ctypes
+import ctypes.util
 import signal
 import struct
 import fcntl
@@ -28,11 +48,6 @@ gi.require_version('Gst', '1.0')
 gi.require_version('GLib', '2.0')
 from gi.repository import Gst, GLib
 
-CAMERAS = {
-    "front": (r"\_SB_.PCI0.LNK0", "OV5670 front"),
-    "back":  (r"\_SB_.PCI0.LNK1", "OV8858 back"),
-}
-SINK_DEVICE = "/dev/video50"
 WIDTH, HEIGHT = 1280, 720
 
 # VIDIOC_S_FMT = _IOWR('V', 5, struct v4l2_format)
@@ -41,15 +56,18 @@ _VIDIOC_S_FMT  = (3 << 30) | (208 << 16) | (ord('V') << 8) | 5
 _V4L2_OUTPUT   = 2                               # V4L2_BUF_TYPE_VIDEO_OUTPUT
 _V4L2_PIX_YUYV = struct.unpack('<I', b'YUYV')[0]
 
-# YUYV black frame: Y=0x10, U=0x80 (YUYV pairs = [0x10, 0x80, 0x10, 0x80, ...])
+# YUYV black frame: Y=0x10, U=0x80
 _BLACK_FRAME = bytes([0x10, 0x80] * (WIDTH * HEIGHT))
+
+# inotify
+_libc          = ctypes.CDLL(ctypes.util.find_library('c'), use_errno=True)
+_IN_OPEN       = 0x00000020
+_IN_CLOSE      = 0x00000018   # IN_CLOSE_WRITE | IN_CLOSE_NOWRITE
+_INOTIFY_HDR   = struct.Struct('iIII')   # wd, mask, cookie, len
 
 
 def open_loopback(device_path):
-    """Open v4l2loopback and configure YUYV 1280x720 format.
-
-    With exclusive_caps=1 the device only advertises V4L2_CAP_VIDEO_CAPTURE.
-    VIDIOC_S_FMT uses V4L2_BUF_TYPE_VIDEO_CAPTURE (type=1).
+    """Open v4l2loopback, configure YUYV 1280x720, write one black frame.
 
     Writes one black frame immediately so that write_position > 0, which
     allows consumers to call VIDIOC_STREAMON(CAPTURE) as soon as they open
@@ -67,13 +85,13 @@ def open_loopback(device_path):
 
     # struct v4l2_format on kernel 6.17:
     #   type (4 B) + reserved (4 B) + union (200 B) = 208 B
-    # With exclusive_caps=1, VIDIOC_S_FMT requires V4L2_BUF_TYPE_VIDEO_OUTPUT (2)
-    # to set the producer format; type=1 (CAPTURE) returns EINVAL.
+    # With exclusive_caps=0, VIDIOC_S_FMT with V4L2_BUF_TYPE_VIDEO_OUTPUT (2)
+    # sets the producer format that consumers will negotiate against.
     fmt = struct.pack('<II', _V4L2_OUTPUT, 0) + pix + bytes(200 - len(pix))
     try:
         fcntl.ioctl(fd, _VIDIOC_S_FMT, bytearray(fmt))
     except OSError as e:
-        print(f"Warning: VIDIOC_S_FMT failed: {e}", file=sys.stderr)
+        print(f"Warning: VIDIOC_S_FMT failed on {device_path}: {e}", file=sys.stderr)
 
     # Prime write_position so consumers can VIDIOC_STREAMON immediately.
     try:
@@ -84,12 +102,65 @@ def open_loopback(device_path):
     return fd
 
 
-def make_pipeline(camera_name):
-    # queue breaks the DMA-buf buffer pool negotiation chain between
-    # libcamerasrc and videoconvert, forcing a software copy.
-    # appsink + write() is used because with exclusive_caps=1 the device only
-    # advertises CAPTURE capability, so v4l2sink (which needs OUTPUT cap) would
-    # refuse to initialise.
+def setup_inotify(device_path):
+    """Create an inotify fd watching device_path for open/close events."""
+    fd = _libc.inotify_init1(os.O_NONBLOCK | os.O_CLOEXEC)
+    if fd < 0:
+        raise OSError(ctypes.get_errno(), "inotify_init1 failed")
+    wd = _libc.inotify_add_watch(fd, device_path.encode(), _IN_OPEN | _IN_CLOSE)
+    if wd < 0:
+        os.close(fd)
+        raise OSError(ctypes.get_errno(), f"inotify_add_watch failed for {device_path}")
+    return fd
+
+
+def drain_inotify(ifd):
+    """Read and discard all pending inotify events."""
+    try:
+        while True:
+            data = os.read(ifd, 4096)
+            if not data:
+                break
+    except BlockingIOError:
+        pass
+
+
+def has_readers(device_path, my_pid):
+    """Return True if any process other than my_pid has device_path open."""
+    real_device = os.path.realpath(device_path)
+    for fd_link in glob.glob('/proc/[0-9]*/fd/*'):
+        try:
+            if int(fd_link.split('/')[2]) == my_pid:
+                continue
+            if os.readlink(fd_link) == real_device:
+                return True
+        except OSError:
+            pass
+    return False
+
+
+# (key, camera_name, label, loopback_device)
+CHANNELS = [
+    ("front", r"\_SB_.PCI0.LNK0", "OV5670 front", "/dev/video50"),
+    ("back",  r"\_SB_.PCI0.LNK1", "OV8858 back",  "/dev/video51"),
+]
+
+
+class CameraChannel:
+    def __init__(self, key, camera_name, label, device):
+        self.key         = key
+        self.camera_name = camera_name
+        self.label       = label
+        self.device      = device
+        self.out_fd      = open_loopback(device)
+        # inotify watch is set up AFTER our own open so our open does not
+        # trigger the watch and cause a spurious pipeline start.
+        self.inotify_fd  = setup_inotify(device)
+        self.pipeline    = None   # None == idle (pipeline in NULL state)
+
+
+def build_pipeline(ch):
+    """Create and wire a fresh GStreamer pipeline for channel ch."""
     pipeline = Gst.parse_launch(
         "libcamerasrc name=src"
         " ! video/x-raw,format=NV12,width=1280,height=720"
@@ -98,28 +169,7 @@ def make_pipeline(camera_name):
         " ! video/x-raw,format=YUY2,width=1280,height=720"
         " ! appsink name=sink emit-signals=true max-buffers=1 drop=true"
     )
-    pipeline.get_by_name("src").set_property("camera-name", camera_name)
-    return pipeline
-
-
-def main():
-    Gst.init(None)
-
-    selection = os.environ.get("DELL5285_CAMERA", "front").lower()
-    if selection not in CAMERAS:
-        print(f"Unknown camera '{selection}', use 'front' or 'back'", file=sys.stderr)
-        sys.exit(1)
-
-    camera_name, label = CAMERAS[selection]
-    print(f"dell5285-camera-loopback: streaming {label} -> {SINK_DEVICE}")
-
-    # Open and configure the loopback device (writes one black frame to prime
-    # write_position before the pipeline produces real frames).
-    out_fd = open_loopback(SINK_DEVICE)
-
-    pipeline = make_pipeline(camera_name)
-    loop     = GLib.MainLoop()
-    appsink  = pipeline.get_by_name("sink")
+    pipeline.get_by_name("src").set_property("camera-name", ch.camera_name)
 
     def on_new_sample(sink):
         sample = sink.emit("pull-sample")
@@ -128,37 +178,141 @@ def main():
             ok, mapinfo = buf.map(Gst.MapFlags.READ)
             if ok:
                 try:
-                    os.write(out_fd, bytes(mapinfo.data))
+                    os.write(ch.out_fd, bytes(mapinfo.data))
                 except BlockingIOError:
                     pass  # no reader yet — drop frame silently
                 buf.unmap(mapinfo)
         return Gst.FlowReturn.OK
 
-    appsink.connect("new-sample", on_new_sample)
+    pipeline.get_by_name("sink").connect("new-sample", on_new_sample)
+    return pipeline
 
-    def on_message(bus, msg):
-        if msg.type == Gst.MessageType.ERROR:
-            err, dbg = msg.parse_error()
-            print(f"ERROR: {err.message}", file=sys.stderr)
-            if dbg:
-                print(f"debug: {dbg}", file=sys.stderr)
-            loop.quit()
-        elif msg.type == Gst.MessageType.EOS:
-            loop.quit()
 
-    pipeline.get_bus().add_signal_watch()
-    pipeline.get_bus().connect("message", on_message)
+def main():
+    Gst.init(None)
+    loop     = GLib.MainLoop()
+    my_pid   = os.getpid()
+    stopping = [False]
+
+    channels = [CameraChannel(*args) for args in CHANNELS]
+    active   = [None]   # active[0]: currently streaming CameraChannel or None
+
+    def stop_channel(ch, rearm=True):
+        if ch.pipeline is None:
+            return
+        print(f"dell5285-camera-loopback: stopping {ch.label}")
+        ch.pipeline.get_bus().remove_signal_watch()
+        ch.pipeline.set_state(Gst.State.NULL)
+        ch.pipeline = None
+        if active[0] is ch:
+            active[0] = None
+        if rearm and not stopping[0]:
+            arm_watch(ch)
+
+    def start_channel(ch):
+        # IPU3 can only run one pipeline — preempt the other if active.
+        # Pass rearm=False: the preempted channel's consumer is still present;
+        # it will get nothing until the active channel releases the camera.
+        if active[0] is not None and active[0] is not ch:
+            print(f"dell5285-camera-loopback: preempting {active[0].label} for {ch.label}")
+            stop_channel(active[0], rearm=True)
+
+        print(f"dell5285-camera-loopback: starting {ch.label} -> {ch.device}")
+        ch.pipeline = build_pipeline(ch)
+
+        bus = ch.pipeline.get_bus()
+        bus.add_signal_watch()
+
+        def on_message(bus, msg):
+            if msg.type == Gst.MessageType.ERROR:
+                err, dbg = msg.parse_error()
+                print(f"ERROR ({ch.label}): {err.message}", file=sys.stderr)
+                if dbg:
+                    print(f"  debug: {dbg}", file=sys.stderr)
+                stop_channel(ch)
+            elif msg.type == Gst.MessageType.EOS:
+                stop_channel(ch)
+
+        bus.connect("message", on_message)
+        ch.pipeline.set_state(Gst.State.PLAYING)
+        active[0] = ch
+        GLib.timeout_add(500, make_watchdog(ch))
+
+    def make_idle_cb(ch):
+        """inotify io_add_watch callback: fires on any open/close of ch.device."""
+        def on_device_event(source, condition):
+            drain_inotify(ch.inotify_fd)
+            if ch.pipeline is None:
+                # Delay before acting: brief enumeration opens (Zoom, Chrome
+                # scanning all /dev/videoN on startup) will have closed within
+                # ~1 s.  Re-check after 2 s; only start if still open then.
+                GLib.timeout_add(2000, make_delayed_check(ch))
+            return GLib.SOURCE_REMOVE   # one-shot — delayed check takes over
+        return on_device_event
+
+    def make_delayed_check(ch):
+        """Timeout callback: 2 s after an inotify event, decide whether to start."""
+        def delayed_check():
+            if ch.pipeline is not None:
+                return GLib.SOURCE_REMOVE   # already started by another event
+            if not has_readers(ch.device, my_pid):
+                # No sustained consumer — re-arm for the next real open.
+                arm_watch(ch)
+                return GLib.SOURCE_REMOVE
+            if active[0] is not None:
+                # Another pipeline is already running (e.g. both cameras were
+                # opened during app enumeration and the other won the race).
+                # Do not preempt here; re-arm and wait for the active pipeline
+                # to stop (its watchdog will kick us off when readers leave).
+                arm_watch(ch)
+                return GLib.SOURCE_REMOVE
+            start_channel(ch)
+            return GLib.SOURCE_REMOVE
+        return delayed_check
+
+    def arm_watch(ch):
+        """Register a one-shot inotify watch on ch's loopback device."""
+        GLib.io_add_watch(ch.inotify_fd, GLib.IOCondition.IN, make_idle_cb(ch))
+
+    def make_watchdog(ch):
+        """Timeout callback: check /proc/fd every 500 ms while streaming.
+
+        Stops the pipeline and re-arms the idle watch when the last
+        consumer closes its fd.  After stopping, immediately starts the
+        other channel if it already has readers (handles the case where the
+        app opens the new camera before closing the current one).
+        """
+        def watchdog():
+            if ch.pipeline is None:
+                return GLib.SOURCE_REMOVE
+            if has_readers(ch.device, my_pid):
+                return GLib.SOURCE_CONTINUE   # still has a consumer
+            stop_channel(ch)                  # stop_channel re-arms ch's watch
+            # Check if the other idle channel already has a waiting consumer.
+            for other in channels:
+                if other is ch or other.pipeline is not None:
+                    continue
+                if has_readers(other.device, my_pid):
+                    start_channel(other)
+                    break
+            return GLib.SOURCE_REMOVE
+        return watchdog
 
     signal.signal(signal.SIGTERM, lambda s, f: loop.quit())
     signal.signal(signal.SIGINT,  lambda s, f: loop.quit())
 
-    pipeline.set_state(Gst.State.PLAYING)
+    for ch in channels:
+        arm_watch(ch)
+        print(f"dell5285-camera-loopback: watching {ch.label} on {ch.device}")
 
     try:
         loop.run()
     finally:
-        pipeline.set_state(Gst.State.NULL)
-        os.close(out_fd)
+        stopping[0] = True
+        for ch in channels:
+            stop_channel(ch, rearm=False)
+            os.close(ch.out_fd)
+            os.close(ch.inotify_fd)
 
 
 if __name__ == "__main__":

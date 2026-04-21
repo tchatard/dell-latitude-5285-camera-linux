@@ -54,7 +54,8 @@ static const struct intel_lpss_platform_info spt_i2c_info = {
 	.swnode = &spt_i2c_node,
 };
 
-/* Same as spt_i2c_info but with QUIRK_IGNORE_RESOURCE_CONFLICTS for Dell 5285
+/*
+ * Same as spt_i2c_info but with QUIRK_IGNORE_RESOURCE_CONFLICTS for Dell 5285
  * where ACPI GEXP device conflicts with I2C4 (INT3446) MMIO resources.
  */
 static const struct intel_lpss_platform_info spt_i2c_info_ignore_conflicts = {
@@ -203,7 +204,8 @@ static int intel_lpss_acpi_probe(struct platform_device *pdev)
 	if (!data)
 		return -ENODEV;
 
-	/* Apply IGNORE_RESOURCE_CONFLICTS for I2C4 on Dell Latitude 5285.
+	/*
+	 * Apply IGNORE_RESOURCE_CONFLICTS for I2C4 on Dell Latitude 5285.
 	 * The ACPI GEXP device conflicts with I2C4 (INT3446) MMIO resources
 	 * due to a BIOS bug where both use the same SB04 variable.
 	 */

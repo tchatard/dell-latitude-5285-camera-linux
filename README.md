@@ -82,10 +82,13 @@ supply names.
 **Fix:** Added `tps68470_board_data` entry for Dell 5285:
 - INT3479 (OV5670): GPIO3 = reset (ACTIVE_LOW), GPIO4 = powerdown (ACTIVE_LOW)
 - INT3477 (OV8858): GPIO9 = s_resetn (ACTIVE_LOW), GPIO7 = s_enable (ACTIVE_LOW)
-- Regulators: CORE→dvdd/INT3477, ANA→avdd/INT3477, VIO→dovdd/INT3477,
-  VSIO→avdd/INT3479 and vsio/INT3477
-- VSIO marked `always_on` so S_I2C_CTL (register 0x43) is set from the
-  moment TPS68470 probes — required for I2C passthrough to OV8858.
+- Regulators:
+  - CORE→dvdd/INT3477, ANA→avdd/INT3477
+  - VIO: hardware always-on (no enable register); no software consumer mapped
+  - VSIO→dovdd/INT3477: when the ov8858 driver enables its `dovdd` supply, VSIO
+    is enabled, which sets S_I2C_CTL (register 0x43) and opens the I2C passthrough
+    to OV8858
+  - AUX1→dvdd/INT3479, AUX2→dovdd/INT3479
 
 > **TPS68470 GPIO note:** GPIO7 and GPIO9 are not regular GPIOs (GPDO reg 0x27);
 > they are the SGPO outputs (reg 0x22 bits 0 and 2) that the driver exposes as
@@ -101,12 +104,12 @@ OV8858 (INT3477) was absent.
 
 ### 5. `ov8858` — INT3477 ACPI ID and `vsio` supply
 
-The ov8858 driver's ACPI match table lacked INT3477, and its supply name array
-did not include `vsio` (needed because TPS68470 VSIO maps to vsio/INT3477 in
-the board data above). The original array also had a duplicate `"dvdd"`.
+The ov8858 driver's ACPI match table lacked INT3477.
 
-**Fix:** Added `{"INT3477", 0}` to `ov8858_of_match`, replaced the duplicate
-`"dvdd"` with `"vsio"` in `ov8858_supply_names[]`.
+**Fix:** Added `{"INT3477", 0}` to `ov8858_acpi_ids`. The supply names array
+uses `avdd`, `dvdd`, `dovdd` — no separate `vsio` entry is needed because VSIO
+is mapped to `dovdd` in the board data and the driver's existing `dovdd` request
+covers it.
 
 ---
 
@@ -119,17 +122,17 @@ sudo apt install linux-headers-$(uname -r) build-essential zstd \
                  gcc-x86-64-linux-gnu openssl mokutil
 ```
 
-The repo includes `install.sh` which handles building, installing, signing
-(Secure Boot / MOK), and updating initramfs in one shot:
+The repo includes `install.sh` which handles everything in one shot: building
+(only rebuilds modules whose source is newer than the last build), installing,
+signing (Secure Boot / MOK), and updating initramfs:
 
 ```bash
-./install.sh
+sudo ./install.sh
 ```
 
-`install.sh` auto-invokes `build.sh` if compiled artefacts are missing, then
-installs them and calls `sign-modules.sh` (via `sudo -E`) which runs
-`depmod -a` and `update-initramfs -u` automatically. After it completes,
-**reboot**.
+`install.sh` always calls `build.sh` (which skips up-to-date modules), then
+installs the modules and calls `sign-modules.sh`, which runs `depmod -a` and
+`update-initramfs -u` automatically. After it completes, **reboot**.
 
 > **Secure Boot note:** On first run, `sign-modules.sh` generates a MOK
 > keypair under `mok/` and calls `mokutil --import`. You will be prompted
@@ -171,7 +174,7 @@ softdep ov8858   pre: intel_skl_int3472_tps68470
 
 **`config/modprobe.d/v4l2loopback.conf`** — loopback devices:
 ```
-options v4l2loopback devices=2 video_nr=50,51 exclusive_caps=1 card_label="Front Camera,Back Camera"
+options v4l2loopback devices=2 video_nr=50,51 exclusive_caps=1,1 card_label="Front Camera,Back Camera"
 ```
 
 ---
@@ -186,11 +189,12 @@ sudo apt install v4l2loopback-dkms python3-gi python3-gi-cairo gir1.2-gstreamer-
                  gstreamer1.0-plugins-base gstreamer1.0-libcamera
 ```
 
-### Why `exclusive_caps=1` is required
+### Why `exclusive_caps=1,1` is required
 
-With `exclusive_caps=1`, the device advertises only `V4L2_CAP_VIDEO_CAPTURE`.
+With `exclusive_caps=1` per device, each advertises only `V4L2_CAP_VIDEO_CAPTURE`.
 Chrome/PipeWire use this flag to distinguish cameras from video output devices.
-Without it, Chrome will not list the device at all.
+Without it (or if only the first device gets `exclusive_caps=1`), Chrome will not
+list the device at all.
 
 ### Why `v4l2sink` does not work here
 
@@ -235,26 +239,31 @@ systemctl --user daemon-reload
 systemctl --user enable --now dell5285-camera-loopback.service
 ```
 
-To switch to the back camera (front and back are mutually exclusive):
-
-```bash
-systemctl --user stop dell5285-camera-loopback.service
-DELL5285_CAMERA=back ~/.local/bin/dell5285-camera-loopback
-```
+The daemon is fully automatic: it starts a libcamera pipeline when an app opens
+a loopback device and tears it down when the app closes it. Camera switching
+(front ↔ back) is handled transparently — the IPU3 IMGU constraint (one pipeline
+at a time) is enforced internally.
 
 ---
 
-## Why Zoom sees both cameras but Chrome only sees the front
+## Camera visibility in Chrome and Zoom
 
-**Zoom** enumerates V4L2 devices directly (`/dev/video*`) and lists all of
-them — including `/dev/video51` (back camera loopback), even though nothing
-is streaming to it. Selecting it in Zoom shows a blank image.
+Both `/dev/video50` (front) and `/dev/video51` (back) are visible and functional
+in Zoom, Chrome, and GNOME Camera.
 
-**Chrome** uses the XDG Camera Portal, which goes through PipeWire /
-WirePlumber. PipeWire only exposes loopback devices that currently have an
-active stream *and* advertise `V4L2_CAP_VIDEO_CAPTURE` without
-`V4L2_CAP_VIDEO_OUTPUT`. Because only video50 has an active stream (the
-service writes to it), PipeWire shows exactly one camera.
+**Zoom** enumerates V4L2 devices directly (`/dev/video*`). Both loopback devices
+appear in the camera list. Selecting either one starts the corresponding libcamera
+pipeline via the daemon.
+
+**Chrome** uses the XDG Camera Portal (PipeWire / WirePlumber). Both devices
+appear because `exclusive_caps=1,1` ensures each reports only
+`V4L2_CAP_VIDEO_CAPTURE` — Chrome rejects any device with the `V4L2_CAP_VIDEO_OUTPUT`
+flag. WirePlumber creates Video/Source nodes for both and they are available
+through the portal.
+
+**Switching cameras:** apps typically close the current camera and reopen the
+selected one. The daemon detects this via inotify and switches the active
+libcamera pipeline automatically (with a ~2 s startup delay for the new pipeline).
 
 ---
 
@@ -275,15 +284,11 @@ No calibration tuning file exists for OV8858 in libcamera. Falls back to
 
 ## Ubuntu GNOME Camera app
 
-The GNOME camera app requires exclusive libcamera access. The loopback service
-holds the front camera via `libcamerasrc`, so the GNOME app will fail while the
-service is running. Stop the service first:
-
-```bash
-systemctl --user stop dell5285-camera-loopback.service
-# use GNOME camera app
-systemctl --user start dell5285-camera-loopback.service
-```
+GNOME Camera works while the loopback service is running. The daemon only holds
+a libcamera pipeline when an app is actively consuming a loopback device; when
+idle the pipeline is in NULL state and libcamera is fully released. GNOME Camera
+therefore gets exclusive access as long as no loopback consumer (Zoom, Chrome)
+is open at the same time.
 
 ---
 
@@ -291,7 +296,8 @@ systemctl --user start dell5285-camera-loopback.service
 
 - Machine: Dell Latitude 5285 2-in-1
 - OS: Ubuntu 25.10
-- Kernel: 6.17.0-19-generic
+- Kernel: 6.17.0-22-generic (also tested on 6.17.0-19 and 6.17.0-20)
 - libcamera: system package (Ubuntu 25.10)
 - v4l2loopback-dkms: system package
-- Working in: Chrome (Google Meet), Zoom, ffmpeg, GStreamer
+- Working in: Chrome (Google Meet), Zoom, GNOME Camera, ffmpeg, GStreamer
+- Both front (OV5670) and back (OV8858) cameras work and are switchable
