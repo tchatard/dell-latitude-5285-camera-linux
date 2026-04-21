@@ -81,7 +81,6 @@ static const char * const ov8858_supply_names[] = {
 	"avdd",		/* Analog power */
 	"dvdd",		/* Digital core power */
 	"dovdd",	/* Digital I/O power */
-	"vsio",		/* Secondary I2C / S_I2C_CTL enable */
 };
 
 struct regval {
@@ -1634,11 +1633,10 @@ static int ov8858_power_on(struct ov8858 *ov8858)
 		dev_err(dev, "Failed to enable regulators\n");
 		goto disable_clk;
 	}
-	dev_info(dev, "regulators enabled (avdd=%d dvdd=%d dovdd=%d vsio=%d)\n",
+	dev_info(dev, "regulators enabled (avdd=%d dvdd=%d dovdd=%d)\n",
 		 regulator_is_enabled(ov8858->supplies[0].consumer),
 		 regulator_is_enabled(ov8858->supplies[1].consumer),
-		 regulator_is_enabled(ov8858->supplies[2].consumer),
-		 regulator_is_enabled(ov8858->supplies[3].consumer));
+		 regulator_is_enabled(ov8858->supplies[2].consumer));
 
 	/*
 	 * The chip manual only suggests 8192 cycles prior to first SCCB
@@ -2000,7 +1998,7 @@ static struct i2c_driver ov8858_i2c_driver = {
 		.name = "ov8858",
 		.pm = &ov8858_pm_ops,
 		.of_match_table = ov8858_of_match,
-		.acpi_match_table = ACPI_PTR(ov8858_acpi_ids),
+		.acpi_match_table = ov8858_acpi_ids,
 	},
 	.probe		= ov8858_probe,
 	.remove		= ov8858_remove,
