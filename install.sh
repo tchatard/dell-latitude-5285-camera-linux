@@ -1,104 +1,93 @@
 #!/usr/bin/env bash
 # Dell Latitude 5285 camera fix — install helper
-# Run from the repository root.
+#
+# Run as: sudo ./install.sh
+#
+# Builds (timestamp-checked), installs modules, signs for Secure Boot,
+# and sets up the loopback service.  This is the only script you need.
+# ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
+
+[[ $EUID -eq 0 ]] || { echo "ERROR: run as root: sudo $0" >&2; exit 1; }
 
 REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
 KVER=$(uname -r)
 INST=/lib/modules/${KVER}/updates/dkms
 ARTEFACTS="$REPO_ROOT/build/artefacts"
 
+# Resolve the real (non-root) user when invoked via sudo
+REAL_USER="${SUDO_USER:-$USER}"
+REAL_HOME=$(getent passwd "$REAL_USER" | cut -d: -f6)
+REAL_UID=$(id -u "$REAL_USER")
+
 ###############################################################################
 # 1. Config files
 ###############################################################################
 echo "==> Installing modprobe / modules-load config..."
-sudo cp config/modprobe.d/v4l2loopback.conf      /etc/modprobe.d/
-sudo cp config/modprobe.d/dell-5285-camera.conf  /etc/modprobe.d/
-sudo cp config/modules-load.d/dell-5285-lpss.conf /etc/modules-load.d/
+cp config/modprobe.d/v4l2loopback.conf      /etc/modprobe.d/
+cp config/modprobe.d/dell-5285-camera.conf  /etc/modprobe.d/
+cp config/modules-load.d/dell-5285-lpss.conf /etc/modules-load.d/
 
 ###############################################################################
 # 2. v4l2loopback
 ###############################################################################
 echo "==> Installing v4l2loopback-dkms..."
-sudo apt-get install -y v4l2loopback-dkms
+apt-get install -y v4l2loopback-dkms
 
 ###############################################################################
 # 3. GStreamer / libcamera dependencies for the loopback service
 ###############################################################################
 echo "==> Installing Python / GStreamer / libcamera packages..."
-sudo apt-get install -y \
+apt-get install -y \
     python3-gi python3-gi-cairo gir1.2-gstreamer-1.0 \
     gstreamer1.0-plugins-base gstreamer1.0-libcamera
 
 ###############################################################################
-# 4. Patched kernel modules
+# 4. Build (timestamp-checked) + install patched kernel modules
 ###############################################################################
-# Build if artefacts are missing
-if [[ ! -f "$ARTEFACTS/intel-lpss-acpi.ko" ]]; then
-    echo "==> Artefacts not found — running build.sh first..."
-    "$REPO_ROOT/build.sh"
-fi
+echo "==> Checking / building kernel modules..."
+"$REPO_ROOT/build.sh"
 
-echo "==> Checking for built .ko files in $ARTEFACTS/ ..."
-MISSING=0
-for f in \
+echo "==> Installing patched kernel modules to ${INST}..."
+mkdir -p "${INST}"
+for ko in \
     "$ARTEFACTS/intel-lpss-acpi.ko" \
+    "$ARTEFACTS/intel-lpss.ko" \
+    "$ARTEFACTS/intel-lpss-pci.ko" \
     "$ARTEFACTS/intel_skl_int3472_tps68470.ko" \
     "$ARTEFACTS/ipu_bridge.ko" \
     "$ARTEFACTS/ov8858.ko"
 do
-    if [[ ! -f "$f" ]]; then
-        echo "    MISSING: $f"
-        MISSING=1
-    fi
+    [[ -f "$ko" ]] || { echo "    MISSING: $ko — did build.sh fail?"; exit 1; }
+    base=$(basename "$ko")
+    zstd -f "$ko" -o "${INST}/${base}.zst"
+    echo "    installed ${base}.zst"
+    # Remove any uncompressed copy that would take precedence
+    [[ -f "${INST}/${base}" ]] && rm -f "${INST}/${base}"
 done
 
-if [[ $MISSING -eq 0 ]]; then
-    echo "==> Installing patched kernel modules to ${INST}..."
-    sudo mkdir -p "${INST}"
-    for ko in \
-        "$ARTEFACTS/intel-lpss-acpi.ko" \
-        "$ARTEFACTS/intel-lpss.ko" \
-        "$ARTEFACTS/intel-lpss-pci.ko" \
-        "$ARTEFACTS/intel_skl_int3472_tps68470.ko" \
-        "$ARTEFACTS/ipu_bridge.ko" \
-        "$ARTEFACTS/ov8858.ko"
-    do
-        [[ -f "$ko" ]] || continue
-        base=$(basename "$ko")
-        sudo zstd -f "$ko" -o "${INST}/${base}.zst"
-        echo "    installed ${base}.zst"
-        # Remove any uncompressed copy that would take precedence
-        if [[ -f "${INST}/${base}" ]]; then
-            sudo rm -f "${INST}/${base}"
-            echo "    removed stale uncompressed ${INST}/${base}"
-        fi
-    done
-else
-    echo ""
-    echo "Some modules could not be built. Check build output above."
-    exit 1
-fi
-
 ###############################################################################
-# 5. Loopback service
-###############################################################################
-echo "==> Installing loopback service..."
-install -Dm755 loopback/dell5285-camera-loopback ~/.local/bin/dell5285-camera-loopback
-install -Dm644 loopback/dell5285-camera-loopback.service \
-    ~/.config/systemd/user/dell5285-camera-loopback.service
-
-systemctl --user daemon-reload
-systemctl --user enable dell5285-camera-loopback.service
-echo "    Service enabled (will start on next graphical login, or run:"
-echo "    systemctl --user start dell5285-camera-loopback.service)"
-
-###############################################################################
-# 6. Sign modules (Secure Boot) + depmod + update-initramfs
+# 5. Sign modules (Secure Boot) + depmod + update-initramfs
 ###############################################################################
 echo ""
 echo "==> Signing kernel modules for Secure Boot..."
-sudo -E "$REPO_ROOT/sign-modules.sh"
+"$REPO_ROOT/sign-modules.sh"
+
+###############################################################################
+# 6. Loopback service (installed as the real user, not root)
+###############################################################################
+echo "==> Installing loopback service for user $REAL_USER..."
+install -Dm755 loopback/dell5285-camera-loopback \
+    "$REAL_HOME/.local/bin/dell5285-camera-loopback"
+install -Dm644 loopback/dell5285-camera-loopback.service \
+    "$REAL_HOME/.config/systemd/user/dell5285-camera-loopback.service"
+
+XDG_RUNTIME_DIR="/run/user/${REAL_UID}" \
+    sudo -u "$REAL_USER" systemctl --user daemon-reload
+XDG_RUNTIME_DIR="/run/user/${REAL_UID}" \
+    sudo -u "$REAL_USER" systemctl --user enable dell5285-camera-loopback.service
+
+echo "    Service enabled for $REAL_USER."
 
 ###############################################################################
 echo ""
