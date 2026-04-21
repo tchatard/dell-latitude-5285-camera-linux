@@ -82,10 +82,13 @@ supply names.
 **Fix:** Added `tps68470_board_data` entry for Dell 5285:
 - INT3479 (OV5670): GPIO3 = reset (ACTIVE_LOW), GPIO4 = powerdown (ACTIVE_LOW)
 - INT3477 (OV8858): GPIO9 = s_resetn (ACTIVE_LOW), GPIO7 = s_enable (ACTIVE_LOW)
-- Regulators: CORE→dvdd/INT3477, ANA→avdd/INT3477, VIO→dovdd/INT3477,
-  VSIO→avdd/INT3479 and vsio/INT3477
-- VSIO marked `always_on` so S_I2C_CTL (register 0x43) is set from the
-  moment TPS68470 probes — required for I2C passthrough to OV8858.
+- Regulators:
+  - CORE→dvdd/INT3477, ANA→avdd/INT3477
+  - VIO: hardware always-on (no enable register); no software consumer mapped
+  - VSIO→dovdd/INT3477: when the ov8858 driver enables its `dovdd` supply, VSIO
+    is enabled, which sets S_I2C_CTL (register 0x43) and opens the I2C passthrough
+    to OV8858
+  - AUX1→dvdd/INT3479, AUX2→dovdd/INT3479
 
 > **TPS68470 GPIO note:** GPIO7 and GPIO9 are not regular GPIOs (GPDO reg 0x27);
 > they are the SGPO outputs (reg 0x22 bits 0 and 2) that the driver exposes as
@@ -101,12 +104,12 @@ OV8858 (INT3477) was absent.
 
 ### 5. `ov8858` — INT3477 ACPI ID and `vsio` supply
 
-The ov8858 driver's ACPI match table lacked INT3477, and its supply name array
-did not include `vsio` (needed because TPS68470 VSIO maps to vsio/INT3477 in
-the board data above). The original array also had a duplicate `"dvdd"`.
+The ov8858 driver's ACPI match table lacked INT3477.
 
-**Fix:** Added `{"INT3477", 0}` to `ov8858_of_match`, replaced the duplicate
-`"dvdd"` with `"vsio"` in `ov8858_supply_names[]`.
+**Fix:** Added `{"INT3477", 0}` to `ov8858_acpi_ids`. The supply names array
+uses `avdd`, `dvdd`, `dovdd` — no separate `vsio` entry is needed because VSIO
+is mapped to `dovdd` in the board data and the driver's existing `dovdd` request
+covers it.
 
 ---
 
@@ -119,17 +122,17 @@ sudo apt install linux-headers-$(uname -r) build-essential zstd \
                  gcc-x86-64-linux-gnu openssl mokutil
 ```
 
-The repo includes `install.sh` which handles building, installing, signing
-(Secure Boot / MOK), and updating initramfs in one shot:
+The repo includes `install.sh` which handles everything in one shot: building
+(only rebuilds modules whose source is newer than the last build), installing,
+signing (Secure Boot / MOK), and updating initramfs:
 
 ```bash
-./install.sh
+sudo ./install.sh
 ```
 
-`install.sh` auto-invokes `build.sh` if compiled artefacts are missing, then
-installs them and calls `sign-modules.sh` (via `sudo -E`) which runs
-`depmod -a` and `update-initramfs -u` automatically. After it completes,
-**reboot**.
+`install.sh` always calls `build.sh` (which skips up-to-date modules), then
+installs the modules and calls `sign-modules.sh`, which runs `depmod -a` and
+`update-initramfs -u` automatically. After it completes, **reboot**.
 
 > **Secure Boot note:** On first run, `sign-modules.sh` generates a MOK
 > keypair under `mok/` and calls `mokutil --import`. You will be prompted
