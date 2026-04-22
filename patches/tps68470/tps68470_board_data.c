@@ -75,9 +75,9 @@ static const struct regulator_init_data surface_go_tps68470_vcm_reg_init_data = 
 };
 
 /*
- * VIO has no enable register (always on at hardware level) and must never
- * have direct consumers -- all outputs go through VSIO.  Its voltage must
- * exactly match VSIO on any board using the I2C pass-through.
+ * Keep VIO always_on.  Its voltage must exactly match VSIO on any board
+ * using the TPS68470 I2C pass-through, and must never have direct consumers
+ * (all I2C-path outputs are gated through VSIO).
  */
 static const struct regulator_init_data generic_tps68470_vio_reg_init_data = {
 	.constraints = {
