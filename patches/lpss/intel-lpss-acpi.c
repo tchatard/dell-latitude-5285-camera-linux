@@ -209,7 +209,8 @@ static int intel_lpss_acpi_probe(struct platform_device *pdev)
 	 * The ACPI GEXP device conflicts with I2C4 (INT3446) MMIO resources
 	 * due to a BIOS bug where both use the same SB04 variable.
 	 */
-	if (acpi_dev_hid_uid_match(ACPI_COMPANION(&pdev->dev), "INT3446", NULL) &&
+	if (acpi_dev_hid_uid_match(ACPI_COMPANION(&pdev->dev),
+				   "INT3446", NULL) &&
 	    dmi_check_system(dell5285_lpss_dmi)) {
 		dev_info(&pdev->dev, "Dell 5285: applying IGNORE_RESOURCE_CONFLICTS for I2C4\n");
 		data = &spt_i2c_info_ignore_conflicts;
