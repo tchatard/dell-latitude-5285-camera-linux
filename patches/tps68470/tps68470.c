@@ -233,7 +233,8 @@ static int skl_int3472_tps68470_probe(struct i2c_client *client)
 	cells[2].name = "tps68470-gpio";
 
 	for (i = 0; i < board_data->n_gpiod_lookups; i++)
-		gpiod_add_lookup_table(board_data->tps68470_gpio_lookup_tables[i]);
+		gpiod_add_lookup_table(
+			board_data->tps68470_gpio_lookup_tables[i]);
 
 	ret = devm_mfd_add_devices(&client->dev, PLATFORM_DEVID_NONE,
 				   cells, TPS68470_WIN_MFD_CELL_COUNT,
