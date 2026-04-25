@@ -147,6 +147,7 @@ static int skl_int3472_tps68470_probe(struct i2c_client *client)
 	struct tps68470_clk_platform_data *clk_pdata;
 	struct mfd_cell *cells;
 	struct regmap *regmap;
+	struct gpiod_lookup_table **tables;
 	int n_consumers;
 	int device_type;
 	int ret;
@@ -232,9 +233,9 @@ static int skl_int3472_tps68470_probe(struct i2c_client *client)
 	cells[1].pdata_size = sizeof(struct tps68470_regulator_platform_data);
 	cells[2].name = "tps68470-gpio";
 
+	tables = board_data->tps68470_gpio_lookup_tables;
 	for (i = 0; i < board_data->n_gpiod_lookups; i++)
-		gpiod_add_lookup_table(
-			board_data->tps68470_gpio_lookup_tables[i]);
+		gpiod_add_lookup_table(tables[i]);
 
 	ret = devm_mfd_add_devices(&client->dev, PLATFORM_DEVID_NONE,
 				   cells, TPS68470_WIN_MFD_CELL_COUNT,
@@ -243,8 +244,7 @@ static int skl_int3472_tps68470_probe(struct i2c_client *client)
 
 	if (ret) {
 		for (i = 0; i < board_data->n_gpiod_lookups; i++)
-			gpiod_remove_lookup_table(
-				board_data->tps68470_gpio_lookup_tables[i]);
+			gpiod_remove_lookup_table(tables[i]);
 	}
 
 	/*
