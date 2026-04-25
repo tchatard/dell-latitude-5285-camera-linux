@@ -87,7 +87,8 @@ supply names.
   - VIO: hardware always-on (no enable register); no software consumer mapped
   - VSIO→dovdd/INT3477: when the ov8858 driver enables its `dovdd` supply, VSIO
     is enabled, which sets S_I2C_CTL (register 0x43) and opens the I2C passthrough
-    to OV8858
+    to OV8858; VSIO also supplies avdd to INT3479 (OV5670 analog supply, shared
+    1.8 V rail)
   - AUX1→dvdd/INT3479, AUX2→dovdd/INT3479
 
 > **TPS68470 GPIO note:** GPIO7 and GPIO9 are not regular GPIOs (GPDO reg 0x27);

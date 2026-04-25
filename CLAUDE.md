@@ -2,7 +2,7 @@
 
 ## Project goal
 Upstream kernel patches to enable both cameras on the Dell Latitude 5285 2-in-1.
-Tested on Ubuntu 25.10, kernel 6.17.0-19-generic.
+Tested on Ubuntu 25.10, kernel 6.17.0-22-generic.
 
 ---
 
@@ -18,17 +18,16 @@ GNVS base: 0xAAE22000 (stable across reboots — but now discovered dynamically 
 
 ---
 
-## Current status (2026-03-25)
+## Current status (2026-04-24)
 
-All cameras working ✅. Patches submitted upstream (v2, 2026-03-24).
+All cameras working ✅. v5 patches ready to send (not yet submitted).
 
 - intel-lpss IGNORE_RESOURCE_CONFLICTS for I2C4: ✅
-- GNVS fix (C0TP/L0CL/L1CL → 0x02) via DSDT AML scanner: ✅
-  - `dmesg: "Dell 5285 GNVS fix at 0x00000000aae22000: C0TP=0x02 L0CL=0x00 L1CL=0x00 -> 0x02"`
+- Static clock consumer list for INT3479 (bypasses broken ACPI _DEP): ✅
 - ipu_bridge finds both INT3477 and INT3479: ✅
 - Front camera (OV5670): ✅ working in Zoom, Chrome, and GNOME Camera via PipeWire
 - Back camera (OV8858): ✅ working in Zoom and Chrome via PipeWire (on-demand loopback daemon)
-- VSIO regulator (S_I2C_CTL passthrough): ✅ vsio=1
+- VSIO regulator (S_I2C_CTL passthrough + OV5670 avdd): ✅
 
 **Note:** `cam -l` fails with EBUSY when PipeWire is running — PipeWire holds /dev/media0
 exclusively. Use `cam -l` only in a TTY or after `systemctl --user stop pipewire`. This is
@@ -42,18 +41,22 @@ expected and does not indicate a problem.
 
 ## Upstream submission
 
-**Status: v2 SUBMITTED 2026-03-24. Awaiting maintainer feedback.**
-v1 (2026-03-19) marked Superseded on patchwork. v2 fixed checkpatch errors, kernel-doc @param warnings, non-ASCII § in comment, wrong git identity on patch3.
+**Status: v5 READY TO SEND (2026-04-24). Not yet submitted.**
+v1–v4 sent and reviewed. v5 addresses Sakari Ailus v4 feedback:
+- Patch 1: removed redundant `data == &spt_i2c_info` guard
+- Patch 2: reverted `n_consumers` to `int`; restructured probe switch
+- Patch 3: updated VIO comment; restored VSIO→avdd for OV5670
+- Patch 5: commit message clarifies supply reorder rationale
 
-Single 5-patch series in `patches-for-submission/combined/`:
+Single 5-patch series in `patches-for-submission/v5-combined/`:
 
 | # | Patch | Tree |
 |---|-------|------|
-| 1 | platform/x86: intel_lpss: add resource conflict quirk for Dell Latitude 5285 | mfd |
-| 2 | platform/x86: int3472: tps68470: fix GNVS clock fields for Dell Latitude 5285 | platform/x86 |
-| 3 | platform/x86: int3472: tps68470: add board data for Dell Latitude 5285 | platform/x86 |
-| 4 | media: ipu-bridge: add sensor configuration for OV8858 (INT3477) | media |
-| 5 | media: ov8858: add ACPI device ID INT3477 and vsio power supply | media |
+| 1 | platform/x86: intel_lpss: add resource conflict quirk for Dell Latitude 5285 | pdx86 |
+| 2 | platform/x86: int3472: tps68470: fix clock consumer registration for Dell Latitude 5285 | pdx86 |
+| 3 | platform/x86: int3472: tps68470: add board data for Dell Latitude 5285 | pdx86 |
+| 4 | media: ipu-bridge: add sensor configuration for OV8858 (INT3477) | media_stage |
+| 5 | media: ov8858: add ACPI device ID INT3477 | media_stage |
 
 All 5 patches are required for a working system. Each is self-contained and bisect-safe.
 
@@ -63,7 +66,7 @@ All 5 patches are required for a working system. Each is self-contained and bise
   platform-driver-x86@vger.kernel.org, mchehab@kernel.org, sakari.ailus@linux.intel.com,
   jacopo.mondi@ideasonboard.com, nicholas@rothemail.net, linux-media@vger.kernel.org
 
-**git send-email command:**
+**git send-email command (fill in --in-reply-to with Sakari's last v4 review Message-ID):**
 ```bash
 git send-email \
   --to=linux-kernel@vger.kernel.org \
@@ -77,17 +80,15 @@ git send-email \
   --cc=sakari.ailus@linux.intel.com \
   --cc=jacopo.mondi@ideasonboard.com \
   --cc=nicholas@rothemail.net \
-  patches-for-submission/combined/000*.patch
+  --in-reply-to=<MESSAGE-ID> \
+  patches-for-submission/v5-combined/000*.patch
 ```
 
 **Upstream trees** (shallow clones, branch `dell-latitude-5285-camera`):
 - `upstream/pdx86/` — Linux 7.0-rc1 base
 - `upstream/media_stage/`
 
-**Likely review points to anticipate:**
-- Patch 2: AML scanning approach for GNVS address, DMI match specifics
-- Patch 3: GPIO/regulator mapping, always_on VSIO justification
-- Cross-subsystem dependency (all 5 patches needed together)
+**v5 needs:** Message-ID from Sakari's last v4 review email for `--in-reply-to`.
 
 ---
 
@@ -98,14 +99,13 @@ BIOS exposes ACPI GEXP device and INT3446 (I2C4 controller) claiming the same MM
 Kernel rejects INT3446 → OV5670's I2C bus never comes up.
 Fix: DMI quirk applies QUIRK_IGNORE_RESOURCE_CONFLICTS for INT3446 on this machine.
 
-### Problem 2 — ACPI _DEP returns wrong dependency (patch 2)
-With I2C4 up, OV5670 still not created by ipu_bridge: `_DEP` on INT3479 returns the root
-PCI bus handle instead of the INT3472 (PMIC) handle.
-Root cause: BIOS leaves GNVS fields C0TP, L0CL, L1CL at zero.
-Fix: TPS68470 probe scans DSDT/SSDTs for GNVS OperationRegion AML signature
-(0x5B 0x80 "GNVS" 0x00), maps the region, writes 0x02 to all three fields before
-ipu_bridge evaluates _DEP.
-GNVS field offsets (from DSDT disassembly): C0TP=0x43A, L0CL=0x4F7, L1CL=0x549, size=0x0725.
+### Problem 2 — Clock consumer not registered for OV5670 (patch 2)
+With I2C4 up, `for_each_acpi_consumer_dev()` on INT3472 misses INT3479 because
+the BIOS _DEP for INT3479 resolves to the root PCI bus instead of INT3472.
+OV5670 never gets a clock consumer registration → no MCLK → sensor unreachable.
+Fix: a static `clk_consumers[]` array in board data bypasses the broken _DEP
+traversal. When `n_clk_consumers > 0`, probe uses the static list instead of
+`for_each_acpi_consumer_dev()`.
 
 ### Problem 3 — No TPS68470 board data (patch 3)
 int3472 driver has no entry for Dell 5285 → no PMIC regulators or GPIOs configured for
@@ -121,11 +121,12 @@ Fix: full supply map and GPIO lookup tables for both sensors.
 **TPS68470 S_I2C architecture:**
 - OV8858 is behind TPS68470's S_I2C passthrough (reg 0x43 S_I2C_CTL, bits[1:0] must be non-zero)
 - VSIO regulator enable IS S_I2C_CTL (TPS68470_S_I2C_CTL_EN_MASK = GENMASK(1,0))
-- VSIO marked always_on → S_I2C_CTL=0x03 from boot, passthrough active immediately
+- VSIO is enabled by the ov8858 driver when it enables its `dovdd` supply
 
 **Regulator mapping:**
-- INT3477 (OV8858): CORE→dvdd, ANA→avdd, VIO→dovdd, VSIO→vsio
-- INT3479 (OV5670): VSIO→avdd
+- INT3477 (OV8858): CORE→dvdd, ANA→avdd, VSIO→dovdd (enables S_I2C passthrough)
+- INT3479 (OV5670): VSIO→avdd, AUX1→dvdd, AUX2→dovdd
+- VIO: always_on (no direct consumers; voltage must match VSIO)
 
 ### Problem 4 — OV8858 not supported (patches 4 & 5)
 - ipu_bridge didn't know INT3477 → skipped at CSI-2 enumeration (patch 4, 360MHz)
@@ -145,17 +146,17 @@ Fix: full supply map and GPIO lookup tables for both sensors.
 
 **After any module install:**
 ```bash
-./install.sh
-sudo -E ./sign-modules.sh
+sudo ./install.sh
 # then reboot
 ```
+(`install.sh` calls `sign-modules.sh` internally — no need to run it separately)
 
-**Module file inventory** (`/lib/modules/6.17.0-19-generic/updates/dkms/`):
+**Module file inventory** (`/lib/modules/6.17.0-22-generic/updates/dkms/`):
 - `intel-lpss-acpi.ko.zst` — IGNORE_RESOURCE_CONFLICTS patch
 - `intel-lpss.ko.zst`, `intel-lpss-pci.ko.zst`
 - `ipu_bridge.ko.zst` — INT3477 sensor entry patch
-- `intel_skl_int3472_tps68470.ko.zst` — GNVS AML scanner + board data
-- `ov8858.ko.zst` — INT3477 ACPI ID + vsio supply
+- `intel_skl_int3472_tps68470.ko.zst` — static clock consumer list + board data
+- `ov8858.ko.zst` — INT3477 ACPI ID
 
 **Config files:**
 - `/etc/modprobe.d/dell-5285-camera.conf`
