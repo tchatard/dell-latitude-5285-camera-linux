@@ -314,12 +314,13 @@ static struct regulator_consumer_supply dell_5285_int3477_core_consumer_supplies
 };
 
 /*
- * VSIO controls the S_I2C_CTL passthrough.  Its voltage must match VIO
- * exactly (both 1800600 uV).  Mapping VSIO to dovdd/INT3477 means the
- * passthrough is enabled when the ov8858 driver enables its dovdd supply.
+ * VSIO controls the S_I2C_CTL passthrough; its voltage must match VIO
+ * (both 1800600 uV).  dovdd/INT3477 enables the passthrough when OV8858
+ * opens its I2C path.  avdd/INT3479 provides the OV5670 analog supply.
  */
 static struct regulator_consumer_supply dell_5285_int3477_vsio_consumer_supplies[] = {
 	REGULATOR_SUPPLY("dovdd", "i2c-INT3477:00"),
+	REGULATOR_SUPPLY("avdd", "i2c-INT3479:00"),
 };
 
 static struct regulator_consumer_supply dell_5285_int3479_aux1_consumer_supplies[] = {
