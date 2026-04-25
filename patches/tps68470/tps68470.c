@@ -147,7 +147,7 @@ static int skl_int3472_tps68470_probe(struct i2c_client *client)
 	struct tps68470_clk_platform_data *clk_pdata;
 	struct mfd_cell *cells;
 	struct regmap *regmap;
-	struct gpiod_lookup_table **tables;
+	struct gpiod_lookup_table * const *tables;
 	int n_consumers;
 	int device_type;
 	int ret;
