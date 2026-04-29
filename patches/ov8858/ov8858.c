@@ -79,8 +79,8 @@
 
 static const char * const ov8858_supply_names[] = {
 	"avdd",		/* Analog power */
-	"dvdd",		/* Digital core power */
 	"dovdd",	/* Digital I/O power */
+	"dvdd",		/* Digital core power */
 };
 
 struct regval {
@@ -1616,8 +1616,6 @@ static int ov8858_power_on(struct ov8858 *ov8858)
 	unsigned long delay_us;
 	int ret;
 
-	dev_info(dev, "ov8858_power_on: entry\n");
-
 	if (clk_get_rate(ov8858->xvclk) != OV8858_XVCLK_FREQ)
 		dev_warn(dev, "xvclk mismatched, modes are based on 24MHz\n");
 
@@ -1633,10 +1631,6 @@ static int ov8858_power_on(struct ov8858 *ov8858)
 		dev_err(dev, "Failed to enable regulators\n");
 		goto disable_clk;
 	}
-	dev_info(dev, "regulators enabled (avdd=%d dvdd=%d dovdd=%d)\n",
-		 regulator_is_enabled(ov8858->supplies[0].consumer),
-		 regulator_is_enabled(ov8858->supplies[1].consumer),
-		 regulator_is_enabled(ov8858->supplies[2].consumer));
 
 	/*
 	 * The chip manual only suggests 8192 cycles prior to first SCCB
