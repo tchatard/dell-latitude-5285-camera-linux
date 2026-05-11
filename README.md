@@ -1,7 +1,10 @@
-# Dell Latitude 5285 2-in-1 — Camera fix for Linux (kernel 6.17+)
+# Dell Latitude 5285 / 5290 2-in-1 — Camera fix for Linux (kernel 6.17+)
 
-This documents how to get both cameras working on the **Dell Latitude 5285 2-in-1**
-under Ubuntu 25.10 with kernel 6.17, including Chrome (Google Meet) and Zoom.
+This documents how to get both cameras working on the **Dell Latitude 5285 / 5290 2-in-1**
+under Ubuntu, including Chrome (Google Meet) and Zoom.
+
+Repository and script names still use `5285` for historical reasons, but this
+repo supports both Latitude 5285 and Latitude 5290 2-in-1.
 
 **Hardware:**
 - Front: OV5670 (ACPI: INT3479, I2C4 / i2c_designware.4)
@@ -51,7 +54,7 @@ The OV5670 lives on I2C4, described by ACPI node INT3446. On this machine
 INT3446 conflicts with a legacy ACPI resource and the driver refuses to bind
 without `IGNORE_RESOURCE_CONFLICTS`.
 
-**Fix:** DMI quirk matching Dell Latitude 5285 + INT3446 → set
+**Fix:** DMI quirk matching Dell Latitude 5285/5290 + INT3446 → set
 `LPSS_SHARED_CLK | IGNORE_RESOURCE_CONFLICTS`.
 
 ### 2. `intel_skl_int3472_tps68470` — clock consumer registration
@@ -73,13 +76,13 @@ uses the board-supplied list instead of calling
 > `modprobe -r / modprobe` cycle gives 0 consumers → probe fails → no
 > clocks/regulators. **Always test by rebooting, not reloading.**
 
-### 3. `intel_skl_int3472_tps68470` — board data for Dell 5285
+### 3. `intel_skl_int3472_tps68470` — board data for Dell 5285/5290
 
 The driver needs a board-data entry for this machine telling it which TPS68470
 GPIOs are reset/powerdown for each sensor, and which regulators map to which
 supply names.
 
-**Fix:** Added `tps68470_board_data` entry for Dell 5285:
+**Fix:** Added `tps68470_board_data` entries for Dell 5285 and Latitude 5290 2-in-1:
 - INT3479 (OV5670): GPIO3 = reset (ACTIVE_LOW), GPIO4 = powerdown (ACTIVE_LOW)
 - INT3477 (OV8858): GPIO9 = s_resetn (ACTIVE_LOW), GPIO7 = s_enable (ACTIVE_LOW)
 - Regulators:
@@ -294,7 +297,7 @@ is open at the same time.
 
 ## Tested on
 
-- Machine: Dell Latitude 5285 2-in-1
+- Machines: Dell Latitude 5285 2-in-1, Dell Latitude 5290 2-in-1
 - OS: Ubuntu 25.10
 - Kernel: 6.17.0-22-generic (also tested on 6.17.0-19 and 6.17.0-20)
 - libcamera: system package (Ubuntu 25.10)

@@ -318,8 +318,9 @@ static struct regulator_consumer_supply dell_5285_int3477_core_consumer_supplies
  * exactly (both 1800600 uV).  Mapping VSIO to dovdd/INT3477 means the
  * passthrough is enabled when the ov8858 driver enables its dovdd supply.
  */
-static struct regulator_consumer_supply dell_5285_int3477_vsio_consumer_supplies[] = {
+static struct regulator_consumer_supply dell_5285_vsio_consumer_supplies[] = {
 	REGULATOR_SUPPLY("dovdd", "i2c-INT3477:00"),
+	REGULATOR_SUPPLY("avdd", "i2c-INT3479:00"),
 };
 
 static struct regulator_consumer_supply dell_5285_int3479_aux1_consumer_supplies[] = {
@@ -370,8 +371,8 @@ static const struct regulator_init_data dell_5285_tps68470_vsio_reg_init_data = 
 		.apply_uV = 1,
 		.valid_ops_mask = REGULATOR_CHANGE_STATUS,
 	},
-	.num_consumer_supplies = ARRAY_SIZE(dell_5285_int3477_vsio_consumer_supplies),
-	.consumer_supplies = dell_5285_int3477_vsio_consumer_supplies,
+	.num_consumer_supplies = ARRAY_SIZE(dell_5285_vsio_consumer_supplies),
+	.consumer_supplies = dell_5285_vsio_consumer_supplies,
 };
 
 static const struct regulator_init_data dell_5285_tps68470_aux1_reg_init_data = {
@@ -477,6 +478,13 @@ static const struct dmi_system_id int3472_tps68470_board_data_table[] = {
 		.matches = {
 			DMI_EXACT_MATCH(DMI_SYS_VENDOR,   "Dell Inc."),
 			DMI_EXACT_MATCH(DMI_PRODUCT_NAME, "Latitude 5285"),
+		},
+		.driver_data = (void *)&dell_5285_tps68470_board_data,
+	},
+	{
+		.matches = {
+			DMI_EXACT_MATCH(DMI_SYS_VENDOR,   "Dell Inc."),
+			DMI_EXACT_MATCH(DMI_PRODUCT_NAME, "Latitude 5290 2-in-1"),
 		},
 		.driver_data = (void *)&dell_5285_tps68470_board_data,
 	},
