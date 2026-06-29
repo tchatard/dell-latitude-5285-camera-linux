@@ -15,3 +15,7 @@ patches/**/.module-common.o
 # Secure Boot MOK — private key must never be committed
 /mok/mok.key
 /mok/mok.der
+/mok/mok.crt
+# Local-only artefacts
+/acpidump-dell5285.dat
+/git send email dry run.txt
